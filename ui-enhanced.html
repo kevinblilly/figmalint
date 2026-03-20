@@ -2301,6 +2301,7 @@
                 <option value="anthropic">Anthropic (Claude)</option>
                 <option value="openai">OpenAI (GPT)</option>
                 <option value="google">Google (Gemini)</option>
+                <option value="bedrock">AWS Bedrock (Claude)</option>
               </select>
               <p class="card-subtitle">Select your preferred AI provider</p>
             </div>
@@ -2318,6 +2319,39 @@
                 <span class="input-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 4v2h-.25A1.75 1.75 0 002 7.75v5.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 13.25v-5.5A1.75 1.75 0 0012.25 6H12V4a4 4 0 10-8 0zm6 2V4a2 2 0 10-4 0v2h4zm-5.25 2h6.5a.25.25 0 01.25.25v5.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-5.5a.25.25 0 01.25-.25z"/></svg></span>
               </div>
               <p class="card-subtitle" id="api-key-hint">Your API key is stored securely in this session</p>
+            </div>
+
+            <!-- AWS Bedrock Credential Fields (shown only when Bedrock is selected) -->
+            <div id="bedrock-credentials" style="display:none;">
+              <div class="form-group">
+                <label for="bedrock-region">AWS Region</label>
+                <select id="bedrock-region">
+                  <option value="us-east-1">us-east-1 (N. Virginia)</option>
+                  <option value="us-west-2">us-west-2 (Oregon)</option>
+                  <option value="eu-west-1">eu-west-1 (Ireland)</option>
+                  <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
+                  <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+                  <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
+                  <option value="ap-south-1">ap-south-1 (Mumbai)</option>
+                </select>
+                <p class="card-subtitle">AWS region where Bedrock is enabled</p>
+              </div>
+              <div class="form-group">
+                <label for="bedrock-access-key-id">AWS Access Key ID</label>
+                <div class="input-wrapper">
+                  <input type="password" id="bedrock-access-key-id" placeholder="AKIAIOSFODNN7EXAMPLE" autocomplete="off">
+                  <span class="input-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 4v2h-.25A1.75 1.75 0 002 7.75v5.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 13.25v-5.5A1.75 1.75 0 0012.25 6H12V4a4 4 0 10-8 0zm6 2V4a2 2 0 10-4 0v2h4zm-5.25 2h6.5a.25.25 0 01.25.25v5.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-5.5a.25.25 0 01.25-.25z"/></svg></span>
+                </div>
+                <p class="card-subtitle">Your IAM user or role access key ID</p>
+              </div>
+              <div class="form-group">
+                <label for="bedrock-secret-access-key">AWS Secret Access Key</label>
+                <div class="input-wrapper">
+                  <input type="password" id="bedrock-secret-access-key" placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" autocomplete="off">
+                  <span class="input-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 4v2h-.25A1.75 1.75 0 002 7.75v5.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 13.25v-5.5A1.75 1.75 0 0012.25 6H12V4a4 4 0 10-8 0zm6 2V4a2 2 0 10-4 0v2h4zm-5.25 2h6.5a.25.25 0 01.25.25v5.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-5.5a.25.25 0 01.25-.25z"/></svg></span>
+                </div>
+                <p class="card-subtitle">Your IAM secret access key</p>
+              </div>
             </div>
 
             <!-- Model Selection (dynamic based on provider) -->
@@ -2341,6 +2375,12 @@
                   <option value="gemini-3-pro-preview" disabled>Gemini 3 Pro (Flagship - Multimodal)</option>
                   <option value="gemini-2.5-pro" disabled>Gemini 2.5 Pro (Recommended)</option>
                   <option value="gemini-2.5-flash" disabled>Gemini 2.5 Flash (Fast - Economy)</option>
+                </optgroup>
+                <!-- AWS Bedrock (Claude) Models -->
+                <optgroup label="AWS Bedrock (Claude)" id="bedrock-models" style="display: none;">
+                  <option value="anthropic.claude-sonnet-4-5-20250929-v1:0">Claude Sonnet 4.5 (Recommended)</option>
+                  <option value="anthropic.claude-3-5-haiku-20241022-v1:0">Claude 3.5 Haiku (Fast)</option>
+                  <option value="anthropic.claude-3-opus-20240229-v1:0">Claude 3 Opus (Flagship)</option>
                 </optgroup>
               </select>
               <p class="card-subtitle">Choose the model that works best for your component analysis</p>
@@ -2769,6 +2809,12 @@
         placeholder: 'AIza...',
         hint: 'Get your API key from aistudio.google.com',
         defaultModel: 'gemini-2.5-pro'
+      },
+      bedrock: {
+        name: 'AWS Bedrock',
+        placeholder: 'AWS credentials below',
+        hint: 'Enter your IAM Access Key ID and Secret below',
+        defaultModel: 'anthropic.claude-sonnet-4-5-20250929-v1:0'
       }
     };
 
@@ -3859,28 +3905,59 @@
 
       if (!config) return;
 
-      // Store current provider's API key before switching
-      if (apiKeyInput.value.trim()) {
+      const bedrockCredentialDiv = document.getElementById('bedrock-credentials');
+
+      // Store current provider's API key/credentials before switching
+      if (currentProvider === 'bedrock') {
+        // Serialize Bedrock fields into JSON and store
+        const accessKeyId = document.getElementById('bedrock-access-key-id').value.trim();
+        const secretAccessKey = document.getElementById('bedrock-secret-access-key').value.trim();
+        const region = document.getElementById('bedrock-region').value;
+        if (accessKeyId || secretAccessKey) {
+          providerApiKeys['bedrock'] = JSON.stringify({ accessKeyId, secretAccessKey, region });
+        }
+      } else if (apiKeyInput.value.trim()) {
         providerApiKeys[currentProvider] = apiKeyInput.value.trim();
       }
 
       // Update current provider
       currentProvider = selectedProvider;
 
+      // Show/hide Bedrock credential fields vs regular API key input
+      if (selectedProvider === 'bedrock') {
+        apiKeyInput.style.display = 'none';
+        if (bedrockCredentialDiv) bedrockCredentialDiv.style.display = '';
+        // Populate Bedrock fields from stored credentials
+        const savedCreds = providerApiKeys['bedrock'];
+        if (savedCreds) {
+          try {
+            const parsed = JSON.parse(savedCreds);
+            document.getElementById('bedrock-access-key-id').value = parsed.accessKeyId || '';
+            document.getElementById('bedrock-secret-access-key').value = parsed.secretAccessKey || '';
+            document.getElementById('bedrock-region').value = parsed.region || 'us-east-1';
+          } catch (e) { /* ignore parse errors */ }
+        }
+      } else {
+        apiKeyInput.style.display = '';
+        if (bedrockCredentialDiv) bedrockCredentialDiv.style.display = 'none';
+        // Restore saved API key for this provider (if any)
+        apiKeyInput.value = providerApiKeys[selectedProvider] || '';
+      }
+
       // Update UI labels
       if (apiKeyLabel) apiKeyLabel.textContent = config.name;
       if (modelLabel) modelLabel.textContent = config.name;
       if (apiKeyHint) apiKeyHint.textContent = config.hint;
-      apiKeyInput.placeholder = config.placeholder;
-
-      // Restore saved API key for this provider (if any)
-      apiKeyInput.value = providerApiKeys[selectedProvider] || '';
+      if (selectedProvider !== 'bedrock') {
+        apiKeyInput.placeholder = config.placeholder;
+      }
 
       // Update model dropdown — disable options not belonging to selected provider
       const providerGroups = {
         anthropic: document.getElementById('anthropic-models'),
         openai: document.getElementById('openai-models'),
-        google: document.getElementById('google-models')
+        google: document.getElementById('google-models'),
+        bedrock: document.getElementById('bedrock-models')
       };
 
       Object.entries(providerGroups).forEach(([key, group]) => {
@@ -3897,7 +3974,9 @@
       modelSelect.value = config.defaultModel;
 
       // Update button state based on whether we have a key for this provider
-      const hasKey = apiKeyInput.value.trim().length > 0;
+      const hasKey = selectedProvider === 'bedrock'
+        ? !!(document.getElementById('bedrock-access-key-id').value.trim() && document.getElementById('bedrock-secret-access-key').value.trim())
+        : apiKeyInput.value.trim().length > 0;
       updateAnalyzeButtonState(hasKey && apiKeySaved);
 
       console.log('Provider changed to:', selectedProvider, 'Model:', config.defaultModel);
@@ -3905,13 +3984,30 @@
 
     // Handle Save API Key
     function handleSaveApiKey() {
-      const apiKey = apiKeyInput.value.trim();
       const selectedModel = modelSelect.value;
       const selectedProvider = providerSelect ? providerSelect.value : 'anthropic';
 
-      if (!apiKey) {
-        updateStatus('Please enter an API key', 'error');
-        return;
+      let apiKey;
+
+      if (selectedProvider === 'bedrock') {
+        // Compose Bedrock credentials JSON from individual fields
+        const accessKeyId = document.getElementById('bedrock-access-key-id').value.trim();
+        const secretAccessKey = document.getElementById('bedrock-secret-access-key').value.trim();
+        const region = document.getElementById('bedrock-region').value;
+
+        if (!accessKeyId || !secretAccessKey) {
+          updateStatus('Please enter your AWS Access Key ID and Secret Access Key', 'error');
+          return;
+        }
+
+        apiKey = JSON.stringify({ accessKeyId, secretAccessKey, region });
+      } else {
+        apiKey = apiKeyInput.value.trim();
+
+        if (!apiKey) {
+          updateStatus('Please enter an API key', 'error');
+          return;
+        }
       }
 
       // Store key for this provider
@@ -4201,11 +4297,29 @@
         modelSelect.value = model;
       }
 
+      // For Bedrock, populate credential fields from stored JSON
+      if (provider === 'bedrock' && hasKey) {
+        const savedCreds = providerApiKeys['bedrock'];
+        if (savedCreds) {
+          try {
+            const parsed = JSON.parse(savedCreds);
+            document.getElementById('bedrock-access-key-id').value = parsed.accessKeyId || '';
+            document.getElementById('bedrock-secret-access-key').value = parsed.secretAccessKey || '';
+            document.getElementById('bedrock-region').value = parsed.region || 'us-east-1';
+          } catch (e) { /* ignore parse errors */ }
+        }
+        const bedrockCredentialDiv = document.getElementById('bedrock-credentials');
+        if (bedrockCredentialDiv) bedrockCredentialDiv.style.display = '';
+        apiKeyInput.style.display = 'none';
+      }
+
       if (hasKey) {
         updateStatus('API key is configured', 'success');
         updateAnalyzeButtonState(true);
         clearApiKeyLink.classList.remove('hidden');
-        apiKeyInput.placeholder = 'API key saved ✓';
+        if (provider !== 'bedrock') {
+          apiKeyInput.placeholder = 'API key saved ✓';
+        }
 
         // Show quick actions and hide config
         apiKeyCard.style.display = 'none';

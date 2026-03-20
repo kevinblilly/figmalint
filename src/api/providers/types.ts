@@ -14,7 +14,7 @@
 /**
  * Supported LLM provider identifiers
  */
-export type ProviderId = 'anthropic' | 'openai' | 'google';
+export type ProviderId = 'anthropic' | 'openai' | 'google' | 'bedrock';
 
 /**
  * Model tier classification for pricing and capability guidance
@@ -448,6 +448,44 @@ export const GOOGLE_MODELS: LLMModel[] = [
   },
 ];
 
+/**
+ * AWS Bedrock (Claude) models configuration
+ *
+ * Available models:
+ * - Claude 3.5 Sonnet: Standard balanced model (default)
+ * - Claude 3.5 Haiku: Economy model for quick tasks
+ * - Claude 3 Opus: Flagship model for complex reasoning
+ */
+export const BEDROCK_MODELS: LLMModel[] = [
+  {
+    id: 'anthropic.claude-sonnet-4-5-20250929-v1:0',
+    name: 'Claude Sonnet 4.5',
+    description: 'Standard model - Balanced performance and cost, recommended for most tasks',
+    tier: 'standard',
+    contextWindow: 200000,
+    maxOutputTokens: 8192,
+    isDefault: true,
+  },
+  {
+    id: 'anthropic.claude-3-5-haiku-20241022-v1:0',
+    name: 'Claude 3.5 Haiku',
+    description: 'Economy model - Fast and cost-effective for routine tasks',
+    tier: 'economy',
+    contextWindow: 200000,
+    maxOutputTokens: 8192,
+    isDefault: false,
+  },
+  {
+    id: 'anthropic.claude-3-opus-20240229-v1:0',
+    name: 'Claude 3 Opus',
+    description: 'Flagship model - Most capable, best for complex analysis and reasoning',
+    tier: 'flagship',
+    contextWindow: 200000,
+    maxOutputTokens: 4096,
+    isDefault: false,
+  },
+];
+
 // =============================================================================
 // Default Model Configuration
 // =============================================================================
@@ -459,6 +497,7 @@ export const DEFAULT_MODELS: Record<ProviderId, string> = {
   anthropic: 'claude-sonnet-4-5-20250929',
   openai: 'gpt-5.2',
   google: 'gemini-2.5-pro',
+  bedrock: 'anthropic.claude-sonnet-4-5-20250929-v1:0',
 };
 
 // =============================================================================
@@ -552,6 +591,18 @@ export function validateApiKeyFormat(apiKey: string, providerId: ProviderId): bo
       return trimmed.startsWith('sk-') && trimmed.length >= 20;
     case 'google':
       return trimmed.startsWith('AIza') && trimmed.length >= 35;
+    case 'bedrock': {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        return (
+          typeof parsed.accessKeyId === 'string' && parsed.accessKeyId.trim().length > 0 &&
+          typeof parsed.secretAccessKey === 'string' && parsed.secretAccessKey.trim().length > 0 &&
+          typeof parsed.region === 'string' && parsed.region.trim().length > 0
+        );
+      } catch {
+        return false;
+      }
+    }
     default:
       return false;
   }
@@ -567,6 +618,7 @@ export function getAllModels(): Array<{ model: LLMModel; providerId: ProviderId 
     ...ANTHROPIC_MODELS.map((model) => ({ model, providerId: 'anthropic' as ProviderId })),
     ...OPENAI_MODELS.map((model) => ({ model, providerId: 'openai' as ProviderId })),
     ...GOOGLE_MODELS.map((model) => ({ model, providerId: 'google' as ProviderId })),
+    ...BEDROCK_MODELS.map((model) => ({ model, providerId: 'bedrock' as ProviderId })),
   ];
 }
 
@@ -584,6 +636,8 @@ export function getModelsForProvider(providerId: ProviderId): LLMModel[] {
       return OPENAI_MODELS;
     case 'google':
       return GOOGLE_MODELS;
+    case 'bedrock':
+      return BEDROCK_MODELS;
     default:
       return [];
   }

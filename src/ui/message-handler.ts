@@ -56,6 +56,18 @@ function isValidApiKeyFormat(apiKey: string, provider: ProviderId = selectedProv
       return trimmed.startsWith('sk-') && trimmed.length >= 20;
     case 'google':
       return trimmed.startsWith('AIza') && trimmed.length >= 35;
+    case 'bedrock': {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        return (
+          typeof parsed.accessKeyId === 'string' && (parsed.accessKeyId as string).trim().length > 0 &&
+          typeof parsed.secretAccessKey === 'string' && (parsed.secretAccessKey as string).trim().length > 0 &&
+          typeof parsed.region === 'string' && (parsed.region as string).trim().length > 0
+        );
+      } catch {
+        return false;
+      }
+    }
     default:
       return false;
   }
