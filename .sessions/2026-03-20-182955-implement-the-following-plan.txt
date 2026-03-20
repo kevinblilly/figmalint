@@ -1,0 +1,2230 @@
+╭─── Claude Code v2.1.80 ──────────────────────────────────────────────────────╮
+│                                          │ Tips for getting started          │
+│               Welcome back!              │ ✔ Run /init to create a CLAUDE.m… │
+│                                          │ ───────────────────────────────── │
+│                  ▐▛███▜▌                 │ Recent activity                   │
+│                 ▝▜█████▛▘                │ 1w ago  can we use this for sonn… │
+│                   ▘▘ ▝▝                  │ 2w ago  hello                     │
+│                                          │ 2w ago  hello                     │
+│    sonnet-latest · API Usage Billing     │ /resume for more                  │
+│   ~/Code/Lilly/LDS/southleft/figmalint   │                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  Welcome to Lilly Code - Lilly's official secure connection to AI coding
+  models! For questions or additional info, visit
+  https://lilly-code.gateway.llm.lilly.com.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Plan: Add AWS Bedrock as an AI Provider                                      │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ FigmaLint currently supports Anthropic, OpenAI, and Google as AI providers   │
+│ via a well-structured                                                        │
+│ LLMProvider abstraction. The user wants to add AWS Bedrock so Claude models  │
+│ can be accessed                                                              │
+│ through AWS infrastructure (useful for enterprise licensing, compliance, and │
+│  per-IAM-user                                                                │
+│ credential distribution). Auth uses AWS Access Key ID + Secret Access Key +  │
+│ Region rather than                                                           │
+│ a single API key — and AWS Bedrock requires AWS Signature Version 4 (SigV4)  │
+│ request signing,                                                             │
+│ which is implemented using the browser's built-in crypto.subtle Web Crypto   │
+│ API.                                                                         │
+│                                                                              │
+│ ---                                                                          │
+│ Critical Design Decisions                                                    │
+│                                                                              │
+│ Credential Storage                                                           │
+│                                                                              │
+│ Bedrock requires 3 fields (accessKeyId, secretAccessKey, region) vs. a       │
+│ single string for all                                                        │
+│ other providers. These will be serialized as a JSON string and stored under  │
+│ bedrock-api-key                                                              │
+│ in Figma clientStorage — consistent with the existing ${providerId}-api-key  │
+│ naming pattern.                                                              │
+│                                                                              │
+│ {"accessKeyId":"AKIAIOSFODNN7EXAMPLE","secretAccessKey":"wJalrXUtnFEMI/...", │
+│ "region":"us-east-1"}                                                        │
+│                                                                              │
+│ SigV4 Signing                                                                │
+│                                                                              │
+│ callProvider() in index.ts currently calls provider.getHeaders(apiKey)       │
+│ synchronously.                                                               │
+│ SigV4 requires async crypto operations. Solution: mirror the existing Google │
+│  special-case                                                                │
+│ pattern in callProvider() with an if (providerId === 'bedrock') block that:  │
+│ 1. Parses credentials from the JSON string                                   │
+│ 2. Builds the dynamic endpoint URL                                           │
+│ (https://bedrock-runtime.{region}.amazonaws.com/model/{modelId}/invoke)      │
+│ 3. Calls signBedrockRequest() (async) to produce SigV4-signed headers        │
+│ 4. Proceeds with the fetch using signed headers                              │
+│                                                                              │
+│ No interface changes needed.                                                 │
+│                                                                              │
+│ Request Format                                                               │
+│                                                                              │
+│ Bedrock's Claude invoke API uses the same Anthropic messages format with one │
+│  difference:                                                                 │
+│ - Replace anthropic-version header with anthropic_version:                   │
+│ "bedrock-2023-05-31" in the body                                             │
+│ - No model field in the body (model is in the URL path)                      │
+│                                                                              │
+│ Models (Claude on Bedrock only)                                              │
+│                                                                              │
+│ ┌─────────────┬───────────────────────────────────────────┬───────────────┐  │
+│ │  Display    │             Bedrock Model ID              │     Tier      │  │
+│ │    Name     │                                           │               │  │
+│ ├─────────────┼───────────────────────────────────────────┼───────────────┤  │
+│ │ Claude 3.5  │ anthropic.claude-3-5-sonnet-20241022-v2:0 │ standard      │  │
+│ │ Sonnet      │                                           │ (default)     │  │
+│ ├─────────────┼───────────────────────────────────────────┼───────────────┤  │
+│ │ Claude 3.5  │ anthropic.claude-3-5-haiku-20241022-v1:0  │ economy       │  │
+│ │ Haiku       │                                           │               │  │
+│ ├─────────────┼───────────────────────────────────────────┼───────────────┤  │
+│ │ Claude 3    │ anthropic.claude-3-opus-20240229-v1:0     │ flagship      │  │
+│ │ Opus        │                                           │               │  │
+│ └─────────────┴───────────────────────────────────────────┴───────────────┘  │
+│                                                                              │
+│ Supported Regions (UI dropdown)                                              │
+│                                                                              │
+│ us-east-1, us-west-2, eu-west-1, eu-central-1, ap-northeast-1,               │
+│ ap-southeast-1, ap-south-1                                                   │
+│                                                                              │
+│ ---                                                                          │
+│ Files to Create                                                              │
+│                                                                              │
+│ src/api/providers/bedrock.ts                                                 │
+│                                                                              │
+│ - BedrockCredentials interface: { accessKeyId, secretAccessKey, region }     │
+│ - parseBedrockCredentials(jsonStr) — parse + validate JSON credentials       │
+│ string                                                                       │
+│ - signBedrockRequest(credentials, method, url, body) — async SigV4 signer    │
+│ using crypto.subtle:                                                         │
+│   - sha256(msg) helper — crypto.subtle.digest('SHA-256', ...)                │
+│   - hmacSHA256(key, msg) helper — crypto.subtle.importKey +                  │
+│ crypto.subtle.sign                                                           │
+│   - getSignatureKey(secret, date, region, service) — HMAC chain derivation   │
+│   - Returns { Authorization, 'x-amz-date', 'x-amz-content-sha256' } headers  │
+│ - BedrockProvider class implementing LLMProvider:                            │
+│   - id = 'bedrock', name = 'AWS Bedrock'                                     │
+│   - endpoint = placeholder (overridden dynamically in callProvider)          │
+│   - keyPrefix = '', keyPlaceholder = 'Enter AWS credentials below'           │
+│   - models = the 3 Claude models above                                       │
+│   - validateApiKey(jsonStr) — parse JSON, verify all 3 fields present and    │
+│ non-empty                                                                    │
+│   - formatRequest(config) — Anthropic messages format WITHOUT model field,   │
+│ WITH anthropic_version: "bedrock-2023-05-31" in body                         │
+│   - parseResponse(response) — identical to AnthropicProvider (same response  │
+│ shape)                                                                       │
+│   - getHeaders() — returns just { 'content-type': 'application/json' }       │
+│ (SigV4 headers added in callProvider)                                        │
+│   - getDefaultModel() — Claude 3.5 Sonnet                                    │
+│   - handleError(statusCode, response) — maps Bedrock error codes to          │
+│ LLMErrorCode                                                                 │
+│ - Export bedrockProvider singleton                                           │
+│                                                                              │
+│ ---                                                                          │
+│ Files to Modify                                                              │
+│                                                                              │
+│ src/api/providers/types.ts                                                   │
+│                                                                              │
+│ 1. ProviderId: add 'bedrock' → 'anthropic' | 'openai' | 'google' | 'bedrock' │
+│ 2. Add BEDROCK_MODELS: LLMModel[] constant (the 3 models)                    │
+│ 3. DEFAULT_MODELS: add bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0'  │
+│ 4. getAllModels(): add bedrock models to the returned array                  │
+│ 5. getModelsForProvider(): add case 'bedrock': return BEDROCK_MODELS;        │
+│ 6. validateApiKeyFormat(): add case 'bedrock': — attempt JSON parse, check   │
+│ all 3 fields                                                                 │
+│                                                                              │
+│ src/api/providers/index.ts                                                   │
+│                                                                              │
+│ 1. Import bedrockProvider, parseBedrockCredentials, signBedrockRequest from  │
+│ ./bedrock                                                                    │
+│ 2. Re-export bedrockProvider                                                 │
+│ 3. providers registry: add bedrock: bedrockProvider                          │
+│ 4. providerIds: add 'bedrock'                                                │
+│ 5. providerMeta: add bedrock entry { name: 'AWS Bedrock (Claude)', icon:     │
+│ '🟠', description: '...' }                                                   │
+│ 6. callProvider(): add Bedrock special case block after the Google special   │
+│ case:                                                                        │
+│ if (providerId === 'bedrock') {                                              │
+│   const creds = parseBedrockCredentials(apiKey);                             │
+│   const encodedModel = encodeURIComponent(config.model);                     │
+│   endpoint = `https://bedrock-runtime.${creds.region}.amazonaws.com/model/${ │
+│ encodedModel}/invoke`;                                                       │
+│   const bodyStr = JSON.stringify(requestBody);                               │
+│   const sigHeaders = await signBedrockRequest(creds, 'POST', endpoint,       │
+│ bodyStr);                                                                    │
+│   Object.assign(headers, sigHeaders);                                        │
+│   // proceed with fetch using bodyStr directly (not re-serialized)           │
+│ }                                                                            │
+│ 6. Note: The fetch call needs to use the pre-serialized bodyStr for Bedrock  │
+│ so the signature                                                             │
+│ matches. Add a bodyToSend variable that defaults to                          │
+│ JSON.stringify(requestBody) but is                                           │
+│ set to bodyStr for Bedrock.                                                  │
+│                                                                              │
+│ manifest.json                                                                │
+│                                                                              │
+│ Add to networkAccess.allowedDomains:                                         │
+│ "https://*.amazonaws.com"                                                    │
+│ This uses Figma's supported wildcard subdomain syntax to cover all Bedrock   │
+│ regional endpoints.                                                          │
+│                                                                              │
+│ ui-enhanced.html                                                             │
+│                                                                              │
+│ HTML changes:                                                                │
+│                                                                              │
+│ 1. Provider dropdown (line 2303, after Google option):                       │
+│ <option value="bedrock">AWS Bedrock (Claude)</option>                        │
+│ 2. Bedrock credential fields (after the existing api-key form-group, ~line   │
+│ 2321):                                                                       │
+│ Add a hidden div#bedrock-credentials containing:                             │
+│   - Region <select id="bedrock-region"> with 7 common AWS regions            │
+│   - Access Key ID <input type="password" id="bedrock-access-key-id">         │
+│   - Secret Access Key <input type="password" id="bedrock-secret-access-key"> │
+│   - style="display:none" by default                                          │
+│ 3. Model optgroup (after google-models optgroup, line 2344):                 │
+│ <optgroup label="AWS Bedrock (Claude)" id="bedrock-models" style="display:   │
+│ none;">                                                                      │
+│   <option value="anthropic.claude-3-5-sonnet-20241022-v2:0" selected>Claude  │
+│ 3.5 Sonnet (Recommended)</option>                                            │
+│   <option value="anthropic.claude-3-5-haiku-20241022-v1:0">Claude 3.5 Haiku  │
+│ (Fast)</option>                                                              │
+│   <option value="anthropic.claude-3-opus-20240229-v1:0">Claude 3 Opus        │
+│ (Flagship)</option>                                                          │
+│ </optgroup>                                                                  │
+│                                                                              │
+│ JavaScript changes:                                                          │
+│                                                                              │
+│ 1. providerConfig (line 2753): Add bedrock entry:                            │
+│ bedrock: {                                                                   │
+│   name: 'AWS Bedrock',                                                       │
+│   placeholder: 'AWS credentials below',                                      │
+│   hint: 'Enter your IAM Access Key ID and Secret below',                     │
+│   defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0'                  │
+│ }                                                                            │
+│ 2. handleProviderChange() (line 3856):                                       │
+│   - Add 'bedrock' to providerGroups                                          │
+│   - After updating labels: show/hide #bedrock-credentials div based on       │
+│ selectedProvider === 'bedrock'                                               │
+│   - Show/hide regular #api-key input: hide when bedrock, show otherwise      │
+│   - When switching away from bedrock, serialize current bedrock field values │
+│  into providerApiKeys.bedrock                                                │
+│   - When switching to bedrock, parse providerApiKeys.bedrock JSON and        │
+│ populate the individual fields                                               │
+│ 3. handleSaveApiKey() (line 3907):                                           │
+│   - When selectedProvider === 'bedrock': read the 3 Bedrock fields, compose  │
+│ JSON, use as apiKey                                                          │
+│   - Otherwise: existing behavior unchanged                                   │
+│ 4. handleApiKeyStatus() (line 4191):                                         │
+│   - When provider is 'bedrock' and hasKey: parse saved JSON and populate     │
+│ Bedrock fields                                                               │
+│   - Show/hide Bedrock credential div appropriately                           │
+│ 5. Add bedrockCredentialDiv variable reference (alongside existing           │
+│ apiKeyInput)                                                                 │
+│                                                                              │
+│ ---                                                                          │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. npm run build should compile without TypeScript errors                    │
+│ 2. Load plugin in Figma desktop app                                          │
+│ 3. Open Settings tab → select "AWS Bedrock (Claude)" in provider dropdown    │
+│   - Regular API key field should hide, Bedrock fields should appear          │
+│ 4. Enter valid AWS credentials and save → credentials stored as JSON in      │
+│ clientStorage                                                                │
+│ 5. Run analysis → should produce results identical to Anthropic provider     │
+│ (same Claude model)                                                          │
+│ 6. Switch to another provider and back → Bedrock fields should repopulate    │
+│ correctly                                                                    │
+│ 7. Clear credentials → all 3 fields should clear                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  Read 2 files, recalled 1 memory (ctrl+o to expand)
+
+⏺ Now let me read the Anthropic provider (to use as a template) and the manifest
+   and HTML files:
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Now let me look at the relevant sections of the HTML file:
+  ⎿  Initializing…
+  ⎿  Invalid tool parameters
+
+  Searched for 5 patterns, read 1 file (ctrl+o to expand)
+
+⏺ Now I have all the context I need. Let me create the tasks and implement
+  everything:
+
+⏺ Write(src/api/providers/bedrock.ts)
+  ⎿  Wrote 453 lines to src/api/providers/bedrock.ts
+       1 /**
+       2  * AWS Bedrock Provider Implementation
+       3  *
+       4  * Implements the LLMProvider interface for AWS Bedrock's Claude
+          models.
+       5  * Uses AWS Signature Version 4 (SigV4) for request signing via 
+         Web Crypto API.
+       6  */
+       7 
+       8 import {
+       9   LLMProvider,
+      10   LLMModel,
+     … +443 lines (ctrl+o to expand)
+
+⏺ Now update types.ts:
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 1 line, removed 1 line
+      14  /**
+      15   * Supported LLM provider identifiers
+      16   */
+      17 -export type ProviderId = 'anthropic' | 'openai' | 'google';    
+      17 +export type ProviderId = 'anthropic' | 'openai' | 'google' | 'b
+         +edrock';                                                       
+      18  
+      19  /**
+      20   * Model tier classification for pricing and capability guidanc
+          e
+
+⏺ Now add the BEDROCK_MODELS constant, update DEFAULT_MODELS, getAllModels,
+  getModelsForProvider, and validateApiKeyFormat:
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 39 lines
+      448    },
+      449  ];
+      450  
+      451 +/**                                                           
+      452 + * AWS Bedrock (Claude) models configuration                  
+      453 + *                                                            
+      454 + * Available models:                                          
+      455 + * - Claude 3.5 Sonnet: Standard balanced model (default)     
+      456 + * - Claude 3.5 Haiku: Economy model for quick tasks          
+      457 + * - Claude 3 Opus: Flagship model for complex reasoning      
+      458 + */                                                           
+      459 +export const BEDROCK_MODELS: LLMModel[] = [                   
+      460 +  {                                                           
+      461 +    id: 'anthropic.claude-3-5-sonnet-20241022-v2:0',          
+      462 +    name: 'Claude 3.5 Sonnet',                                
+      463 +    description: 'Standard model - Balanced performance and co
+          +st, recommended for most tasks',                              
+      464 +    tier: 'standard',                                         
+      465 +    contextWindow: 200000,                                    
+      466 +    maxOutputTokens: 8192,                                    
+      467 +    isDefault: true,                                          
+      468 +  },                                                          
+      469 +  {                                                           
+      470 +    id: 'anthropic.claude-3-5-haiku-20241022-v1:0',           
+      471 +    name: 'Claude 3.5 Haiku',                                 
+      472 +    description: 'Economy model - Fast and cost-effective for 
+          +routine tasks',                                               
+      473 +    tier: 'economy',                                          
+      474 +    contextWindow: 200000,                                    
+      475 +    maxOutputTokens: 8192,                                    
+      476 +    isDefault: false,                                         
+      477 +  },                                                          
+      478 +  {                                                           
+      479 +    id: 'anthropic.claude-3-opus-20240229-v1:0',              
+      480 +    name: 'Claude 3 Opus',                                    
+      481 +    description: 'Flagship model - Most capable, best for comp
+          +lex analysis and reasoning',                                  
+      482 +    tier: 'flagship',                                         
+      483 +    contextWindow: 200000,                                    
+      484 +    maxOutputTokens: 4096,                                    
+      485 +    isDefault: false,                                         
+      486 +  },                                                          
+      487 +];                                                            
+      488 +                                                              
+      489  // ===========================================================
+           ==================
+      490  // Default Model Configuration
+      491  // ===========================================================
+           ==================
+     ...
+      497    anthropic: 'claude-sonnet-4-5-20250929',
+      498    openai: 'gpt-5.2',
+      499    google: 'gemini-2.5-pro',
+      500 +  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',       
+      501  };
+      502  
+      503  // ===========================================================
+           ==================
+
+⏺ Now update getAllModels and getModelsForProvider and validateApiKeyFormat:
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 1 line
+      606      ...ANTHROPIC_MODELS.map((model) => ({ model, providerId: '
+           anthropic' as ProviderId })),
+      607      ...OPENAI_MODELS.map((model) => ({ model, providerId: 'ope
+           nai' as ProviderId })),
+      608      ...GOOGLE_MODELS.map((model) => ({ model, providerId: 'goo
+           gle' as ProviderId })),
+      609 +    ...BEDROCK_MODELS.map((model) => ({ model, providerId: 'be
+          +drock' as ProviderId })),                                     
+      610    ];
+      611  }
+      612  
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 2 lines
+      624        return OPENAI_MODELS;
+      625      case 'google':
+      626        return GOOGLE_MODELS;
+      627 +    case 'bedrock':                                           
+      628 +      return BEDROCK_MODELS;                                  
+      629      default:
+      630        return [];
+      631    }
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 12 lines
+      591        return trimmed.startsWith('sk-') && trimmed.length >= 20
+           ;
+      592      case 'google':
+      593        return trimmed.startsWith('AIza') && trimmed.length >= 3
+           5;
+      594 +    case 'bedrock': {                                         
+      595 +      try {                                                   
+      596 +        const parsed = JSON.parse(trimmed) as Record<string, u
+          +nknown>;                                                      
+      597 +        return (                                              
+      598 +          typeof parsed.accessKeyId === 'string' && parsed.acc
+          +essKeyId.trim().length > 0 &&                                 
+      599 +          typeof parsed.secretAccessKey === 'string' && parsed
+          +.secretAccessKey.trim().length > 0 &&                         
+      600 +          typeof parsed.region === 'string' && parsed.region.t
+          +rim().length > 0                                              
+      601 +        );                                                    
+      602 +      } catch {                                               
+      603 +        return false;                                         
+      604 +      }                                                       
+      605 +    }                                                         
+      606      default:
+      607        return false;
+      608    }
+
+⏺ Now update index.ts:
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 1 line
+      10  import { anthropicProvider } from './anthropic';
+      11  import { OpenAIProvider as openaiProvider } from './openai';
+      12  import { googleProvider } from './google';
+      13 +import { bedrockProvider, parseBedrockCredentials, signBedrockR
+         +equest } from './bedrock';                                     
+      14  import {
+      15    LLMProvider,
+      16    ProviderId,
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 1 line
+      30  export { anthropicProvider } from './anthropic';
+      31  export { OpenAIProvider as openaiProvider } from './openai';
+      32  export { googleProvider } from './google';
+      33 +export { bedrockProvider } from './bedrock';                   
+      34  
+      35  // ============================================================
+          =================
+      36  // Provider Registry
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 1 line
+      43    anthropic: anthropicProvider,
+      44    openai: openaiProvider,
+      45    google: googleProvider,
+      46 +  bedrock: bedrockProvider,                                    
+      47  };
+      48  
+      49  /**
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 1 line, removed 1 line
+      49  /**
+      50   * Array of all provider IDs for iteration
+      51   */
+      52 -export const providerIds: ProviderId[] = ['anthropic', 'openai'
+         -, 'google'];                                                   
+      52 +export const providerIds: ProviderId[] = ['anthropic', 'openai'
+         +, 'google', 'bedrock'];                                        
+      53  
+      54  /**
+      55   * Provider metadata for UI display
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 5 lines
+      70      icon: '🔵',
+      71      description: 'Gemini models with multimodal understanding a
+          nd large context windows',
+      72    },
+      73 +  bedrock: {                                                   
+      74 +    name: 'AWS Bedrock (Claude)',                              
+      75 +    icon: '🟠',                                                
+      76 +    description: 'Claude models via AWS Bedrock for enterprise 
+         +IAM-based access',                                             
+      77 +  },                                                           
+      78  };
+      79  
+      80  // ============================================================
+          =================
+
+⏺ Now add the Bedrock special case in callProvider. Let me read the current
+  state of that function:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 14 lines, removed 2 lines
+      183    const requestBody = provider.formatRequest(config);
+      184    const headers = provider.getHeaders(apiKey);
+      185  
+      186 -  // Determine endpoint (Google has special URL handling)     
+      186 +  // Determine endpoint (Google and Bedrock have special URL h
+          +andling)                                                      
+      187    let endpoint = provider.endpoint;
+      188 +  let bodyToSend: string | undefined;                         
+      189 +                                                              
+      190    if (providerId === 'google') {
+      191      // Google requires model and key in URL
+      192      endpoint = `${provider.endpoint}/${config.model}:generateC
+           ontent?key=${apiKey.trim()}`;
+      193    }
+      194  
+      195 +  if (providerId === 'bedrock') {                             
+      196 +    // Bedrock requires dynamic endpoint and SigV4-signed head
+          +ers                                                           
+      197 +    const creds = parseBedrockCredentials(apiKey);            
+      198 +    const encodedModel = encodeURIComponent(config.model);    
+      199 +    endpoint = `https://bedrock-runtime.${creds.region}.amazon
+          +aws.com/model/${encodedModel}/invoke`;                        
+      200 +    bodyToSend = JSON.stringify(requestBody);                 
+      201 +    const sigHeaders = await signBedrockRequest(creds, 'POST',
+          + endpoint, bodyToSend);                                       
+      202 +    Object.assign(headers, sigHeaders);                       
+      203 +  }                                                           
+      204 +                                                              
+      205    try {
+      206      console.log(`Making ${provider.name} API call to ${endpoin
+           t}...`);
+      207  
+      208      const response = await fetch(endpoint, {
+      209        method: 'POST',
+      210        headers: headers,
+      199 -      body: JSON.stringify(requestBody),                      
+      211 +      body: bodyToSend ?? JSON.stringify(requestBody),        
+      212      });
+      213  
+      214      if (!response.ok) {
+
+⏺ Now update manifest.json:
+
+⏺ Update(manifest.json)
+  ⎿  Added 2 lines, removed 1 line
+      12        "https://api.anthropic.com",
+      13        "https://api.openai.com",
+      14        "https://generativelanguage.googleapis.com",
+      15 -      "https://design-systems-mcp.southleft-llc.workers.dev"   
+      15 +      "https://design-systems-mcp.southleft-llc.workers.dev",  
+      16 +      "https://*.amazonaws.com"                                
+      17      ]
+      18    }
+      19  }
+
+⏺ Now update the HTML. First add the provider dropdown option:
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 1 line
+      2301                  <option value="anthropic">Anthropic (Claude)<
+            /option>
+      2302                  <option value="openai">OpenAI (GPT)</option>
+      2303                  <option value="google">Google (Gemini)</optio
+            n>
+      2304 +                <option value="bedrock">AWS Bedrock (Claude)<
+           +/option>                                                     
+      2305                </select>
+      2306                <p class="card-subtitle">Select your preferred 
+            AI provider</p>
+      2307              </div>
+
+⏺ Now add the Bedrock credential fields after the api-key form-group. Let me see
+   the exact content around line 2321:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Let me fix the TypeScript error in bedrock.ts first:
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 1 line, removed 1 line
+      48      throw new Error('Invalid credentials: must be valid JSON');
+      49    }
+      50  
+      51 -  const { accessKeyId, secretAccessKey, region } = parsed as Be
+         -drockCredentials;                                              
+      51 +  const { accessKeyId, secretAccessKey, region } = parsed as un
+         +known as BedrockCredentials;                                   
+      52  
+      53    if (!accessKeyId || typeof accessKeyId !== 'string' || !acces
+          sKeyId.trim()) {
+      54      throw new Error('Missing or empty accessKeyId');
+
+⏺ Now add the Bedrock credential fields div after the api-key form-group:
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 33 lines
+      2321                <p class="card-subtitle" id="api-key-hint">Your
+             API key is stored securely in this session</p>
+      2322              </div>
+      2323  
+      2324 +            <!-- AWS Bedrock Credential Fields (shown only wh
+           +en Bedrock is selected) -->                                  
+      2325 +            <div id="bedrock-credentials" style="display:none
+           +;">                                                          
+      2326 +              <div class="form-group">                       
+      2327 +                <label for="bedrock-region">AWS Region</label
+           +>                                                            
+      2328 +                <select id="bedrock-region">                 
+      2329 +                  <option value="us-east-1">us-east-1 (N. Vir
+           +ginia)</option>                                              
+      2330 +                  <option value="us-west-2">us-west-2 (Oregon
+           +)</option>                                                   
+      2331 +                  <option value="eu-west-1">eu-west-1 (Irelan
+           +d)</option>                                                  
+      2332 +                  <option value="eu-central-1">eu-central-1 (
+           +Frankfurt)</option>                                          
+      2333 +                  <option value="ap-northeast-1">ap-northeast
+           +-1 (Tokyo)</option>                                          
+      2334 +                  <option value="ap-southeast-1">ap-southeast
+           +-1 (Singapore)</option>                                      
+      2335 +                  <option value="ap-south-1">ap-south-1 (Mumb
+           +ai)</option>                                                 
+      2336 +                </select>                                    
+      2337 +                <p class="card-subtitle">AWS region where Bed
+           +rock is enabled</p>                                          
+      2338 +              </div>                                         
+      2339 +              <div class="form-group">                       
+      2340 +                <label for="bedrock-access-key-id">AWS Access
+           + Key ID</label>                                              
+      2341 +                <div class="input-wrapper">                  
+      2342 +                  <input type="password" id="bedrock-access-k
+           +ey-id" placeholder="AKIAIOSFODNN7EXAMPLE" autocomplete="off">
+      2343 +                  <span class="input-icon"><svg width="14" he
+           +ight="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4
+           + 4v2h-.25A1.75 1.75 0 002 7.75v5.5c0 .966.784 1.75 1.75 1.75h
+           +8.5A1.75 1.75 0 0014 13.25v-5.5A1.75 1.75 0 0012.25 6H12V4a4 
+           +4 0 10-8 0zm6 2V4a2 2 0 10-4 0v2h4zm-5.25 2h6.5a.25.25 0 01.2
+           +5.25v5.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-5.5a.25
+           +.25 0 01.25-.25z"/></svg></span>                             
+      2344 +                </div>                                       
+      2345 +                <p class="card-subtitle">Your IAM user or rol
+           +e access key ID</p>                                          
+      2346 +              </div>                                         
+      2347 +              <div class="form-group">                       
+      2348 +                <label for="bedrock-secret-access-key">AWS Se
+           +cret Access Key</label>                                      
+      2349 +                <div class="input-wrapper">                  
+      2350 +                  <input type="password" id="bedrock-secret-a
+           +ccess-key" placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE
+           +KEY" autocomplete="off">                                     
+      2351 +                  <span class="input-icon"><svg width="14" he
+           +ight="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4
+           + 4v2h-.25A1.75 1.75 0 002 7.75v5.5c0 .966.784 1.75 1.75 1.75h
+           +8.5A1.75 1.75 0 0014 13.25v-5.5A1.75 1.75 0 0012.25 6H12V4a4 
+           +4 0 10-8 0zm6 2V4a2 2 0 10-4 0v2h4zm-5.25 2h6.5a.25.25 0 01.2
+           +5.25v5.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-5.5a.25
+           +.25 0 01.25-.25z"/></svg></span>                             
+      2352 +                </div>                                       
+      2353 +                <p class="card-subtitle">Your IAM secret acce
+           +ss key</p>                                                   
+      2354 +              </div>                                         
+      2355 +            </div>                                           
+      2356 +                                                             
+      2357              <!-- Model Selection (dynamic based on provider) 
+            -->
+      2358              <div class="form-group">
+      2359                <label for="model-select"><span id="model-label
+            ">Claude</span> Model</label>
+
+⏺ Now add the Bedrock models optgroup after the google-models optgroup:
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 6 lines
+      2376                    <option value="gemini-2.5-pro" disabled>Gem
+            ini 2.5 Pro (Recommended)</option>
+      2377                    <option value="gemini-2.5-flash" disabled>G
+            emini 2.5 Flash (Fast - Economy)</option>
+      2378                  </optgroup>
+      2379 +                <!-- AWS Bedrock (Claude) Models -->         
+      2380 +                <optgroup label="AWS Bedrock (Claude)" id="be
+           +drock-models" style="display: none;">                        
+      2381 +                  <option value="anthropic.claude-3-5-sonnet-
+           +20241022-v2:0">Claude 3.5 Sonnet (Recommended)</option>      
+      2382 +                  <option value="anthropic.claude-3-5-haiku-2
+           +0241022-v1:0">Claude 3.5 Haiku (Fast)</option>               
+      2383 +                  <option value="anthropic.claude-3-opus-2024
+           +0229-v1:0">Claude 3 Opus (Flagship)</option>                 
+      2384 +                </optgroup>                                  
+      2385                </select>
+      2386                <p class="card-subtitle">Choose the model that 
+            works best for your component analysis</p>
+      2387              </div>
+
+⏺ Now update the JavaScript providerConfig:
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 6 lines
+      2809          placeholder: 'AIza...',
+      2810          hint: 'Get your API key from aistudio.google.com',
+      2811          defaultModel: 'gemini-2.5-pro'
+      2812 +      },                                                     
+      2813 +      bedrock: {                                             
+      2814 +        name: 'AWS Bedrock',                                 
+      2815 +        placeholder: 'AWS credentials below',                
+      2816 +        hint: 'Enter your IAM Access Key ID and Secret below'
+           +,                                                            
+      2817 +        defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v
+           +2:0'                                                         
+      2818        }
+      2819      };
+      2820  
+
+⏺ Now update handleProviderChange. Let me read the current content again to get
+  the exact text:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 41 lines, removed 8 lines
+      3905  
+      3906        if (!config) return;
+      3907  
+      3908 -      // Store current provider's API key before switching   
+      3909 -      if (apiKeyInput.value.trim()) {                        
+      3908 +      const bedrockCredentialDiv = document.getElementById('b
+           +edrock-credentials');                                        
+      3909 +                                                             
+      3910 +      // Store current provider's API key/credentials before 
+           +switching                                                    
+      3911 +      if (currentProvider === 'bedrock') {                   
+      3912 +        // Serialize Bedrock fields into JSON and store      
+      3913 +        const accessKeyId = document.getElementById('bedrock-
+           +access-key-id').value.trim();                                
+      3914 +        const secretAccessKey = document.getElementById('bedr
+           +ock-secret-access-key').value.trim();                        
+      3915 +        const region = document.getElementById('bedrock-regio
+           +n').value;                                                   
+      3916 +        if (accessKeyId || secretAccessKey) {                
+      3917 +          providerApiKeys['bedrock'] = JSON.stringify({ acces
+           +sKeyId, secretAccessKey, region });                          
+      3918 +        }                                                    
+      3919 +      } else if (apiKeyInput.value.trim()) {                 
+      3920          providerApiKeys[currentProvider] = apiKeyInput.value.
+            trim();
+      3921        }
+      3922  
+      3923        // Update current provider
+      3924        currentProvider = selectedProvider;
+      3925  
+      3926 +      // Show/hide Bedrock credential fields vs regular API k
+           +ey input                                                     
+      3927 +      if (selectedProvider === 'bedrock') {                  
+      3928 +        apiKeyInput.style.display = 'none';                  
+      3929 +        if (bedrockCredentialDiv) bedrockCredentialDiv.style.
+           +display = '';                                                
+      3930 +        // Populate Bedrock fields from stored credentials   
+      3931 +        const savedCreds = providerApiKeys['bedrock'];       
+      3932 +        if (savedCreds) {                                    
+      3933 +          try {                                              
+      3934 +            const parsed = JSON.parse(savedCreds);           
+      3935 +            document.getElementById('bedrock-access-key-id').
+           +value = parsed.accessKeyId || '';                            
+      3936 +            document.getElementById('bedrock-secret-access-ke
+           +y').value = parsed.secretAccessKey || '';                    
+      3937 +            document.getElementById('bedrock-region').value =
+           + parsed.region || 'us-east-1';                               
+      3938 +          } catch (e) { /* ignore parse errors */ }          
+      3939 +        }                                                    
+      3940 +      } else {                                               
+      3941 +        apiKeyInput.style.display = '';                      
+      3942 +        if (bedrockCredentialDiv) bedrockCredentialDiv.style.
+           +display = 'none';                                            
+      3943 +        // Restore saved API key for this provider (if any)  
+      3944 +        apiKeyInput.value = providerApiKeys[selectedProvider]
+           + || '';                                                      
+      3945 +      }                                                      
+      3946 +                                                             
+      3947        // Update UI labels
+      3948        if (apiKeyLabel) apiKeyLabel.textContent = config.name;
+      3949        if (modelLabel) modelLabel.textContent = config.name;
+      3950        if (apiKeyHint) apiKeyHint.textContent = config.hint;
+      3920 -      apiKeyInput.placeholder = config.placeholder;          
+      3951 +      if (selectedProvider !== 'bedrock') {                  
+      3952 +        apiKeyInput.placeholder = config.placeholder;        
+      3953 +      }                                                      
+      3954  
+      3922 -      // Restore saved API key for this provider (if any)    
+      3923 -      apiKeyInput.value = providerApiKeys[selectedProvider] |
+           -| '';                                                        
+      3924 -                                                             
+      3955        // Update model dropdown — disable options not belongin
+            g to selected provider
+      3956        const providerGroups = {
+      3957          anthropic: document.getElementById('anthropic-models'
+            ),
+      3958          openai: document.getElementById('openai-models'),
+      3929 -        google: document.getElementById('google-models')     
+      3959 +        google: document.getElementById('google-models'),    
+      3960 +        bedrock: document.getElementById('bedrock-models')   
+      3961        };
+      3962  
+      3963        Object.entries(providerGroups).forEach(([key, group]) =
+            > {
+     ...
+      3974        modelSelect.value = config.defaultModel;
+      3975  
+      3976        // Update button state based on whether we have a key f
+            or this provider
+      3946 -      const hasKey = apiKeyInput.value.trim().length > 0;    
+      3977 +      const hasKey = selectedProvider === 'bedrock'          
+      3978 +        ? !!(document.getElementById('bedrock-access-key-id')
+           +.value.trim() && document.getElementById('bedrock-secret-acce
+           +ss-key').value.trim())                                       
+      3979 +        : apiKeyInput.value.trim().length > 0;               
+      3980        updateAnalyzeButtonState(hasKey && apiKeySaved);
+      3981  
+      3982        console.log('Provider changed to:', selectedProvider, '
+            Model:', config.defaultModel);
+
+⏺ Now update handleSaveApiKey:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 21 lines, removed 4 lines
+      3984  
+      3985      // Handle Save API Key
+      3986      function handleSaveApiKey() {
+      3987 -      const apiKey = apiKeyInput.value.trim();               
+      3987        const selectedModel = modelSelect.value;
+      3988        const selectedProvider = providerSelect ? providerSelec
+            t.value : 'anthropic';
+      3989  
+      3991 -      if (!apiKey) {                                         
+      3992 -        updateStatus('Please enter an API key', 'error');    
+      3993 -        return;                                              
+      3990 +      let apiKey;                                            
+      3991 +                                                             
+      3992 +      if (selectedProvider === 'bedrock') {                  
+      3993 +        // Compose Bedrock credentials JSON from individual f
+           +ields                                                        
+      3994 +        const accessKeyId = document.getElementById('bedrock-
+           +access-key-id').value.trim();                                
+      3995 +        const secretAccessKey = document.getElementById('bedr
+           +ock-secret-access-key').value.trim();                        
+      3996 +        const region = document.getElementById('bedrock-regio
+           +n').value;                                                   
+      3997 +                                                             
+      3998 +        if (!accessKeyId || !secretAccessKey) {              
+      3999 +          updateStatus('Please enter your AWS Access Key ID a
+           +nd Secret Access Key', 'error');                             
+      4000 +          return;                                            
+      4001 +        }                                                    
+      4002 +                                                             
+      4003 +        apiKey = JSON.stringify({ accessKeyId, secretAccessKe
+           +y, region });                                                
+      4004 +      } else {                                               
+      4005 +        apiKey = apiKeyInput.value.trim();                   
+      4006 +                                                             
+      4007 +        if (!apiKey) {                                       
+      4008 +          updateStatus('Please enter an API key', 'error');  
+      4009 +          return;                                            
+      4010 +        }                                                    
+      4011        }
+      4012  
+      4013        // Store key for this provider
+
+⏺ Now update handleApiKeyStatus. Let me read the current content:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 19 lines, removed 1 line
+      4297          modelSelect.value = model;
+      4298        }
+      4299  
+      4300 +      // For Bedrock, populate credential fields from stored 
+           +JSON                                                         
+      4301 +      if (provider === 'bedrock' && hasKey) {                
+      4302 +        const savedCreds = providerApiKeys['bedrock'];       
+      4303 +        if (savedCreds) {                                    
+      4304 +          try {                                              
+      4305 +            const parsed = JSON.parse(savedCreds);           
+      4306 +            document.getElementById('bedrock-access-key-id').
+           +value = parsed.accessKeyId || '';                            
+      4307 +            document.getElementById('bedrock-secret-access-ke
+           +y').value = parsed.secretAccessKey || '';                    
+      4308 +            document.getElementById('bedrock-region').value =
+           + parsed.region || 'us-east-1';                               
+      4309 +          } catch (e) { /* ignore parse errors */ }          
+      4310 +        }                                                    
+      4311 +        const bedrockCredentialDiv = document.getElementById(
+           +'bedrock-credentials');                                      
+      4312 +        if (bedrockCredentialDiv) bedrockCredentialDiv.style.
+           +display = '';                                                
+      4313 +        apiKeyInput.style.display = 'none';                  
+      4314 +      }                                                      
+      4315 +                                                             
+      4316        if (hasKey) {
+      4317          updateStatus('API key is configured', 'success');
+      4318          updateAnalyzeButtonState(true);
+      4319          clearApiKeyLink.classList.remove('hidden');
+      4304 -        apiKeyInput.placeholder = 'API key saved ✓';         
+      4320 +        if (provider !== 'bedrock') {                        
+      4321 +          apiKeyInput.placeholder = 'API key saved ✓';       
+      4322 +        }                                                    
+      4323  
+      4324          // Show quick actions and hide config
+      4325          apiKeyCard.style.display = 'none';
+
+⏺ Now let's run the build to check for TypeScript errors:
+
+⏺ Bash(npm run build 2>&1)  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Build succeeds cleanly. Let me also verify the TypeScript diagnostic is
+  resolved:
+
+⏺ ide - getDiagnostics (MCP)(uri: "file:///Users/L009916/Code/Lilly/LDS/southlef
+                            t/figmalint/src/api/providers/bedrock.ts")
+  ⎿  [
+       {
+         "uri": "file:///Users/L009916/Code/Lilly/LDS/southleft/figmalint/s
+     … +5 lines (ctrl+o to expand)
+
+⏺ No diagnostics. Let me do a quick sanity check on the other modified files:
+
+⏺ ide - getDiagnostics (MCP)(uri: "file:///Users/L009916/Code/Lilly/LDS/southlef
+                            t/figmalint/src/api/providers/index.ts")
+  ⎿  [
+       {
+         "uri": "file:///Users/L009916/Code/Lilly/LDS/southleft/figmalint/s
+     … +4 lines (ctrl+o to expand)
+
+⏺ ide - getDiagnostics (MCP)(uri: "file:///Users/L009916/Code/Lilly/LDS/southlef
+                            t/figmalint/src/api/providers/types.ts")
+  ⎿  [
+       {
+         "uri": "file:///Users/L009916/Code/Lilly/LDS/southleft/figmalint/s
+     … +4 lines (ctrl+o to expand)
+
+⏺ All clean. Here's a summary of everything that was implemented:
+
+  ---
+  AWS Bedrock provider added successfully. Here's what was changed:
+
+  New file
+
+  - src/api/providers/bedrock.ts — Full BedrockProvider implementation with:
+    - BedrockCredentials interface + parseBedrockCredentials() for JSON
+  parsing/validation
+    - signBedrockRequest() — async SigV4 signer using crypto.subtle (SHA-256,
+  HMAC-SHA256, key derivation chain)
+    - BedrockProvider class with 3 Claude models (3.5 Sonnet default, 3.5 Haiku,
+   3 Opus)
+    - Request format uses anthropic_version: "bedrock-2023-05-31" in body (no
+  model field)
+    - bedrockProvider singleton export
+
+  Modified files
+
+  - src/api/providers/types.ts — Added 'bedrock' to ProviderId, added
+  BEDROCK_MODELS constant, added bedrock to DEFAULT_MODELS, getAllModels(),
+  getModelsForProvider(), and validateApiKeyFormat()
+  - src/api/providers/index.ts — Imported bedrock exports, added to providers
+  registry, providerIds, providerMeta, and added Bedrock special-case block in
+  callProvider() with pre-serialized bodyToSend for SigV4 signature integrity
+  - manifest.json — Added "https://*.amazonaws.com" to allowedDomains
+  - ui-enhanced.html — Added provider dropdown option, Bedrock credential fields
+   (region select + access key ID + secret access key), model optgroup,
+  providerConfig entry, and updated handleProviderChange, handleSaveApiKey, and
+  handleApiKeyStatus to handle the Bedrock-specific flow
+
+✻ Cogitated for 4m 12s
+
+❯ either this is not working or i am not creating the right credentials in AWS  
+IAM... can we maybe do a quick walkthrough of setting that up in AWS so that I  
+can know if its the code or not                                                 
+
+⏺ Here's a complete walkthrough. There are two separate things you need to set
+  up in AWS — model access (in Bedrock) and IAM credentials (for
+  authentication).
+
+  ---
+  Step 1: Enable Bedrock Model Access
+
+  Bedrock models are off by default — this is the most common gotcha.
+
+  1. Go to console.aws.amazon.com and sign in
+  2. Switch to the region you want to use (e.g. us-east-1 — top-right dropdown)
+  3. Search for "Bedrock" in the services search bar → open it
+  4. In the left sidebar → "Model access"
+  5. Click "Modify model access"
+  6. Check the boxes for:
+    - Claude 3.5 Sonnet v2 (anthropic.claude-3-5-sonnet-20241022-v2:0)
+    - Claude 3.5 Haiku (optional)
+    - Claude 3 Opus (optional)
+  7. Click "Next" → "Submit"
+  8. Wait for status to show "Access granted" (usually instant for Claude
+  models)
+
+  ▎ Important: Model access is per-region. If you use us-west-2, you must enable
+   models in us-west-2.
+
+  ---
+  Step 2: Create an IAM User with Bedrock Permissions
+
+  1. Go to IAM → Users → Create user
+  2. Give it a name (e.g. figmalint-bedrock)
+  3. Permissions step → choose "Attach policies directly"
+  4. Search for and attach AmazonBedrockFullAccess
+    - Or for least-privilege, create a custom policy:
+    {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": "bedrock:InvokeModel",
+        "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.*"
+      }
+    ]
+  }
+  5. Click through to create the user
+
+  ---
+  Step 3: Generate Access Keys
+
+  1. Open the user you just created → "Security credentials" tab
+  2. Scroll to "Access keys" → "Create access key"
+  3. Use case: select "Other" (or "Application running outside AWS")
+  4. Click through → you'll see:
+    - Access key ID — looks like AKIAIOSFODNN7EXAMPLE
+    - Secret access key — shown only once, copy it now
+  5. Download the CSV or copy both values
+
+  ---
+  Step 4: Enter in the Plugin
+
+  In the FigmaLint settings with AWS Bedrock selected:
+  - Region: match exactly what you enabled models in (e.g. us-east-1)
+  - Access Key ID: the AKIA... value
+  - Secret Access Key: the long secret value
+
+  ---
+  Quick Validation Test
+
+  Before trying the plugin, you can verify credentials work via AWS CLI (if you
+  have it):
+
+  aws bedrock-runtime invoke-model \
+    --region us-east-1 \
+    --model-id anthropic.claude-3-5-sonnet-20241022-v2:0 \
+    --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":10,"messages"
+  :[{"role":"user","content":"hi"}]}' \
+    --cli-binary-format raw-in-base64-out \
+    /tmp/output.json && cat /tmp/output.json
+
+  If that returns a response, the credentials and model access are both correct
+  — and if the plugin fails at that point it's a code issue. If the CLI also
+  fails, it's a credentials/permissions issue.
+
+  ---
+  Most common failure points:
+  1. Model access not enabled in the right region
+  2. Wrong region selected in the plugin vs where models are enabled
+  3. IAM user missing bedrock:InvokeModel permission
+  4. Copying the access key ID vs secret mixed up (secret is the much longer
+  one)
+
+❯ doesn't work. herer is the exact error i am getting when hitting 'save key'.  
+from the missing expected format this makes me think there is actually a        
+problem with the key validation in this code:                                   
+"vendor-core-ade2edecaf4781c7.min.js.br:54 Error saving API key: Error: Invalid 
+ API key format for AWS Bedrock. Expected format: Enter AWS credentials below"  
+
+⏺ The error message pattern "Invalid API key format for AWS Bedrock. Expected
+  format: Enter AWS credentials below" means there's a hardcoded validation
+  somewhere in the plugin's main code.ts that's generating that message — not
+  using the provider's validateApiKey(). Let me find it.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Found it. There's a separate isValidApiKeyFormat function in
+  message-handler.ts. Let me see it:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ There it is — isValidApiKeyFormat in message-handler.ts has its own hardcoded
+  switch statement with no bedrock case, so it falls through to default (which
+  returns false). Fix:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/ui/message-handler.ts)
+  ⎿  Added 12 lines
+      56        return trimmed.startsWith('sk-') && trimmed.length >= 20;
+      57      case 'google':
+      58        return trimmed.startsWith('AIza') && trimmed.length >= 35
+          ;
+      59 +    case 'bedrock': {                                          
+      60 +      try {                                                    
+      61 +        const parsed = JSON.parse(trimmed) as Record<string, un
+         +known>;                                                        
+      62 +        return (                                               
+      63 +          typeof parsed.accessKeyId === 'string' && (parsed.acc
+         +essKeyId as string).trim().length > 0 &&                       
+      64 +          typeof parsed.secretAccessKey === 'string' && (parsed
+         +.secretAccessKey as string).trim().length > 0 &&               
+      65 +          typeof parsed.region === 'string' && (parsed.region a
+         +s string).trim().length > 0                                    
+      66 +        );                                                     
+      67 +      } catch {                                                
+      68 +        return false;                                          
+      69 +      }                                                        
+      70 +    }                                                          
+      71      default:
+      72        return false;
+      73    }
+
+⏺ Also need to check the isValidApiKeyFormat call at line 164 that gates loading
+   from storage — same issue would prevent restoring saved Bedrock credentials
+  on plugin load:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Good — that path also calls isValidApiKeyFormat, so the fix covers both cases.
+   Now rebuild:
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Builds clean. The problem was a second isValidApiKeyFormat function in
+  src/ui/message-handler.ts — it had its own hardcoded switch statement that
+  didn't know about bedrock, so it returned false and threw the error before the
+   credentials even reached the provider.
+
+  The fix adds a case 'bedrock': block that JSON-parses the credential string
+  and checks all three required fields are present — matching the same logic
+  already in types.ts and bedrock.ts.
+
+  Reload the plugin in Figma and try saving again.
+
+✻ Baked for 43s
+
+❯ almost there. seems to at least save the key but still cannot verify it is    
+actually able to interface with the model. when running 'analyze component' in  
+the plugin there is much activity in the console but it ends with an error URL  
+is not a constructor. following is the console traces that include the error    
+and a few logs prior to it: 🔍 [HARD-CODED] Checking corner radius for Vector   
+(no variables)                                                                  
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 Analyzing node: Vector Type:       
+VECTOR                                                                          
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 [VARIABLES] Checking bound         
+variables for Vector: ['strokes']                                               
+vendor-core-ade2edecaf4781c7.min.js.br:54    🖊️ Processing strokes variables... 
+vendor-core-ade2edecaf4781c7.min.js.br:54    🎯 Found strokes variable:         
+Color/Neutral/100                                                               
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 [VARIABLES] Total variables found  
+for Vector: 1                                                                   
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 [HARD-CODED] Checking fills for    
+Vector (no variables, no style)                                                 
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 [VARIABLES] Vector has stroke      
+variables - skipping hard-coded detection                                       
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 Node Vector has strokeWeight: 3    
+vendor-core-ade2edecaf4781c7.min.js.br:54    Has strokes: true, Has visible     
+strokes: true, Has strokeWeight variable: false, boundVariable keys: [strokes]  
+vendor-core-ade2edecaf4781c7.min.js.br:54    ✅ Adding stroke weight: 3px       
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔍 [HARD-CODED] Checking corner       
+radius for Vector (no variables)                                                
+vendor-core-ade2edecaf4781c7.min.js.br:54 📊 [ANALYSIS] Extracted from Figma    
+API:                                                                            
+vendor-core-ade2edecaf4781c7.min.js.br:54   Properties: 2                       
+vendor-core-ade2edecaf4781c7.min.js.br:54   States: 1                           
+vendor-core-ade2edecaf4781c7.min.js.br:54   Tokens: 6 categories                
+vendor-core-ade2edecaf4781c7.min.js.br:54   Description: Missing                
+vendor-core-ade2edecaf4781c7.min.js.br:54 🔄 Using hybrid LLM + MCP approach    
+(bedrock)...                                                                    
+vendor-core-ade2edecaf4781c7.min.js.br:54 Error during enhanced analysis:       
+TypeError: URL is not a constructor                                             
+    at signBedrockRequest (PLUGIN_3_SOURCE:2017:23)                             
+    at callProvider (PLUGIN_3_SOURCE:2279:32)                                   
+    at processEnhancedAnalysis (PLUGIN_3_SOURCE:3981:33)                        
+    at async handleEnhancedAnalyze (PLUGIN_3_SOURCE:6107:22)                    
+    at async handleUIMessage (PLUGIN_3_SOURCE:5907:11)                          
+
+⏺ The Figma plugin sandbox doesn't have the browser URL constructor available. I
+   need to replace new URL(url) in signBedrockRequest with manual string
+  parsing.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 5 lines, removed 3 lines
+      136    body: string
+      137  ): Promise<{ Authorization: string; 'x-amz-date': string; 'x-a
+           mz-content-sha256': string }> {
+      138    const service = 'bedrock';
+      139 -  const parsedUrl = new URL(url);                             
+      140 -  const host = parsedUrl.hostname;                            
+      141 -  const canonicalUri = parsedUrl.pathname || '/';             
+      139 +  // Parse URL manually — Figma plugin sandbox does not have U
+          +RL constructor                                                
+      140 +  const withoutProtocol = url.replace(/^https?:\/\//, '');    
+      141 +  const slashIndex = withoutProtocol.indexOf('/');            
+      142 +  const host = slashIndex === -1 ? withoutProtocol : withoutPr
+          +otocol.slice(0, slashIndex);                                  
+      143 +  const canonicalUri = slashIndex === -1 ? '/' : withoutProtoc
+          +ol.slice(slashIndex);                                         
+      144    const canonicalQueryString = ''; // No query params for invo
+           ke
+      145  
+      146    // Build datetime strings
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Built clean. Reload the plugin and try again — the URL is not a constructor
+  error is gone. The URL is now parsed with plain string operations which work
+  fine in the Figma sandbox.
+❯ and now: vendor-core-ade2edecaf4781c7.min.js.br:54 Error during enhanced      
+analysis: TypeError: TextEncoder is not a constructor                           
+    at sha256 (PLUGIN_5_SOURCE:1996:21)                                         
+    at signBedrockRequest (PLUGIN_5_SOURCE:2025:31)                             
+    at callProvider (PLUGIN_5_SOURCE:2280:32)                                   
+    at processEnhancedAnalysis (PLUGIN_5_SOURCE:3982:33)                        
+    at async handleEnhancedAnalyze (PLUGIN_5_SOURCE:6108:22)                    
+    at async handleUIMessage (PLUGIN_5_SOURCE:5908:11)                          
+
+⏺ Same root cause — TextEncoder also isn't in the Figma plugin sandbox. I need
+  to replace all three new TextEncoder() usages in the SigV4 helpers with a
+  manual UTF-8 encoder.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 31 lines, removed 5 lines
+       72  // ===========================================================
+           ==================
+       73  
+       74  /**
+       75 + * Manual UTF-8 encoder — replaces TextEncoder which is unavai
+          +lable in the Figma plugin sandbox                             
+       76 + */                                                           
+       77 +function encodeUtf8(str: string): Uint8Array {                
+       78 +  const bytes: number[] = [];                                 
+       79 +  for (let i = 0; i < str.length; i++) {                      
+       80 +    let code = str.charCodeAt(i);                             
+       81 +    if (code < 0x80) {                                        
+       82 +      bytes.push(code);                                       
+       83 +    } else if (code < 0x800) {                                
+       84 +      bytes.push(0xC0 | (code >> 6), 0x80 | (code & 0x3F));   
+       85 +    } else if (code >= 0xD800 && code <= 0xDBFF) {            
+       86 +      // Surrogate pair                                       
+       87 +      const lo = str.charCodeAt(++i);                         
+       88 +      code = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00)
+          +;                                                             
+       89 +      bytes.push(                                             
+       90 +        0xF0 | (code >> 18),                                  
+       91 +        0x80 | ((code >> 12) & 0x3F),                         
+       92 +        0x80 | ((code >> 6) & 0x3F),                          
+       93 +        0x80 | (code & 0x3F)                                  
+       94 +      );                                                      
+       95 +    } else {                                                  
+       96 +      bytes.push(0xE0 | (code >> 12), 0x80 | ((code >> 6) & 0x
+          +3F), 0x80 | (code & 0x3F));                                   
+       97 +    }                                                         
+       98 +  }                                                           
+       99 +  return new Uint8Array(bytes);                               
+      100 +}                                                             
+      101 +                                                              
+      102 +/**                                                           
+      103   * Compute SHA-256 hash of a string, returning hex string
+      104   */
+      105  async function sha256(message: string): Promise<string> {
+       78 -  const encoder = new TextEncoder();                          
+       79 -  const data = encoder.encode(message);                       
+      106 +  const data = encodeUtf8(message);                           
+      107    const hashBuffer = await crypto.subtle.digest('SHA-256', dat
+           a);
+      108    return Array.from(new Uint8Array(hashBuffer))
+      109      .map((b) => b.toString(16).padStart(2, '0'))
+     ...
+      114   * Compute HMAC-SHA256 of a message using a key, returning Arr
+           ayBuffer
+      115   */
+      116  async function hmacSHA256(key: ArrayBuffer | string, message: 
+           string): Promise<ArrayBuffer> {
+       90 -  const encoder = new TextEncoder();                          
+      117    const keyMaterial =
+      118      typeof key === 'string'
+       93 -      ? await crypto.subtle.importKey('raw', encoder.encode(ke
+          -y), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])       
+      119 +      ? await crypto.subtle.importKey('raw', encodeUtf8(key), 
+          +{ name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])           
+      120        : await crypto.subtle.importKey('raw', key, { name: 'HMA
+           C', hash: 'SHA-256' }, false, ['sign']);
+      121  
+       96 -  return crypto.subtle.sign('HMAC', keyMaterial, encoder.encod
+          -e(message));                                                  
+      122 +  return crypto.subtle.sign('HMAC', keyMaterial, encodeUtf8(me
+          +ssage));                                                      
+      123  }
+      124  
+      125  /**
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Built clean. Reload and try again. If the Figma sandbox is also missing any
+  other globals (crypto.subtle itself, etc.) we'll see the next error — but
+  TextEncoder and URL were the two most commonly absent ones. crypto.subtle is
+  explicitly supported in Figma plugins so that one should be fine.
+
+✻ Worked for 32s
+
+❯ looks like we might have an issue with crypto.subtle after all, the error i   
+get now: Error during enhanced analysis: TypeError: Cannot read properties of   
+undefined (reading 'subtle')                                                    
+    at sha256 (PLUGIN_7_SOURCE:2020:37)                                         
+    at signBedrockRequest (PLUGIN_7_SOURCE:2046:31)                             
+    at callProvider (PLUGIN_7_SOURCE:2301:32)                                   
+    at processEnhancedAnalysis (PLUGIN_7_SOURCE:4003:33)                        
+    at async handleEnhancedAnalyze (PLUGIN_7_SOURCE:6129:22)                    
+    at async handleUIMessage (PLUGIN_7_SOURCE:5929:11)                          
+
+⏺ crypto.subtle is also unavailable in the Figma plugin main thread. I need to
+  replace the entire SigV4 crypto with a pure JavaScript SHA-256 and HMAC
+  implementation — no Web Crypto API needed.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Now I'll replace the entire crypto section — drop all Web Crypto calls and
+  implement SHA-256 and HMAC-SHA256 in pure JS:
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 120 lines, removed 50 lines
+      72  // ============================================================
+          =================
+      73  
+      74  /**
+      75 - * Manual UTF-8 encoder — replaces TextEncoder which is unavail
+         -able in the Figma plugin sandbox                               
+      75 + * Manual UTF-8 encoder — Figma plugin sandbox lacks TextEncode
+         +r                                                              
+      76   */
+      77  function encodeUtf8(str: string): Uint8Array {
+      78    const bytes: number[] = [];
+     ...
+      83      } else if (code < 0x800) {
+      84        bytes.push(0xC0 | (code >> 6), 0x80 | (code & 0x3F));
+      85      } else if (code >= 0xD800 && code <= 0xDBFF) {
+      86 -      // Surrogate pair                                        
+      86        const lo = str.charCodeAt(++i);
+      87        code = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+      88        bytes.push(
+     ...
+       98    return new Uint8Array(bytes);
+       99  }
+      100  
+      101 +// SHA-256 round constants                                    
+      102 +const SHA256_K = new Uint32Array([                            
+      103 +  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 
+          +0x59f111f1, 0x923f82a4, 0xab1c5ed5,                           
+      104 +  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 
+          +0x80deb1fe, 0x9bdc06a7, 0xc19bf174,                           
+      105 +  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 
+          +0x4a7484aa, 0x5cb0a9dc, 0x76f988da,                           
+      106 +  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 
+          +0xd5a79147, 0x06ca6351, 0x14292967,                           
+      107 +  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 
+          +0x766a0abb, 0x81c2c92e, 0x92722c85,                           
+      108 +  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 
+          +0xd6990624, 0xf40e3585, 0x106aa070,                           
+      109 +  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 
+          +0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,                           
+      110 +  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 
+          +0xa4506ceb, 0xbef9a3f7, 0xc67178f2,                           
+      111 +]);                                                           
+      112 +                                                              
+      113 +function rotr32(x: number, n: number): number {               
+      114 +  return (x >>> n) | (x << (32 - n));                         
+      115 +}                                                             
+      116 +                                                              
+      117  /**
+      103 - * Compute SHA-256 hash of a string, returning hex string     
+      118 + * Pure-JS SHA-256 — no Web Crypto API needed                 
+      119   */
+      105 -async function sha256(message: string): Promise<string> {     
+      106 -  const data = encodeUtf8(message);                           
+      107 -  const hashBuffer = await crypto.subtle.digest('SHA-256', dat
+          -a);                                                           
+      108 -  return Array.from(new Uint8Array(hashBuffer))               
+      120 +function sha256Bytes(data: Uint8Array): Uint8Array {          
+      121 +  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 
+          +0xa54ff53a;                                                   
+      122 +  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 
+          +0x5be0cd19;                                                   
+      123 +                                                              
+      124 +  const len = data.length;                                    
+      125 +  const paddedLen = Math.ceil((len + 9) / 64) * 64;           
+      126 +  const padded = new Uint8Array(paddedLen);                   
+      127 +  padded.set(data);                                           
+      128 +  padded[len] = 0x80;                                         
+      129 +  const view = new DataView(padded.buffer);                   
+      130 +  view.setUint32(paddedLen - 4, (len * 8) >>> 0, false);      
+      131 +  view.setUint32(paddedLen - 8, Math.floor(len / 0x20000000) >
+          +>> 0, false);                                                 
+      132 +                                                              
+      133 +  const w = new Uint32Array(64);                              
+      134 +  for (let offset = 0; offset < paddedLen; offset += 64) {    
+      135 +    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset 
+          ++ i * 4, false);                                              
+      136 +    for (let i = 16; i < 64; i++) {                           
+      137 +      const s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) 
+          +^ (w[i - 15] >>> 3);                                          
+      138 +      const s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^
+          + (w[i - 2] >>> 10);                                           
+      139 +      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;          
+      140 +    }                                                         
+      141 +    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6
+          +, h = h7;                                                     
+      142 +    for (let i = 0; i < 64; i++) {                            
+      143 +      const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+      144 +      const ch = (e & f) ^ (~e & g);                          
+      145 +      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0; 
+      146 +      const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+      147 +      const maj = (a & b) ^ (a & c) ^ (b & c);                
+      148 +      const temp2 = (S0 + maj) >>> 0;                         
+      149 +      h = g; g = f; f = e; e = (d + temp1) >>> 0;             
+      150 +      d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;         
+      151 +    }                                                         
+      152 +    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0;                 
+      153 +    h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;                 
+      154 +    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0;                 
+      155 +    h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;                 
+      156 +  }                                                           
+      157 +                                                              
+      158 +  const result = new Uint8Array(32);                          
+      159 +  const rv = new DataView(result.buffer);                     
+      160 +  rv.setUint32(0, h0, false);  rv.setUint32(4, h1, false);    
+      161 +  rv.setUint32(8, h2, false);  rv.setUint32(12, h3, false);   
+      162 +  rv.setUint32(16, h4, false); rv.setUint32(20, h5, false);   
+      163 +  rv.setUint32(24, h6, false); rv.setUint32(28, h7, false);   
+      164 +  return result;                                              
+      165 +}                                                             
+      166 +                                                              
+      167 +function sha256Hex(message: string): string {                 
+      168 +  return Array.from(sha256Bytes(encodeUtf8(message)))         
+      169      .map((b) => b.toString(16).padStart(2, '0'))
+      170      .join('');
+      171  }
+      172  
+      173  /**
+      114 - * Compute HMAC-SHA256 of a message using a key, returning Arr
+          -ayBuffer                                                      
+      174 + * Pure-JS HMAC-SHA256                                        
+      175   */
+      116 -async function hmacSHA256(key: ArrayBuffer | string, message: 
+          -string): Promise<ArrayBuffer> {                               
+      117 -  const keyMaterial =                                         
+      118 -    typeof key === 'string'                                   
+      119 -      ? await crypto.subtle.importKey('raw', encodeUtf8(key), 
+          -{ name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])           
+      120 -      : await crypto.subtle.importKey('raw', key, { name: 'HMA
+          -C', hash: 'SHA-256' }, false, ['sign']);                      
+      176 +function hmacSHA256(key: Uint8Array | string, message: Uint8Ar
+          +ray | string): Uint8Array {                                   
+      177 +  const BLOCK = 64;                                           
+      178 +  let k = typeof key === 'string' ? encodeUtf8(key) : key;    
+      179 +  if (k.length > BLOCK) k = sha256Bytes(k);                   
+      180  
+      122 -  return crypto.subtle.sign('HMAC', keyMaterial, encodeUtf8(me
+          -ssage));                                                      
+      181 +  const kPadded = new Uint8Array(BLOCK);                      
+      182 +  kPadded.set(k);                                             
+      183 +                                                              
+      184 +  const ipad = new Uint8Array(BLOCK);                         
+      185 +  const opad = new Uint8Array(BLOCK);                         
+      186 +  for (let i = 0; i < BLOCK; i++) {                           
+      187 +    ipad[i] = kPadded[i] ^ 0x36;                              
+      188 +    opad[i] = kPadded[i] ^ 0x5C;                              
+      189 +  }                                                           
+      190 +                                                              
+      191 +  const msg = typeof message === 'string' ? encodeUtf8(message
+          +) : message;                                                  
+      192 +                                                              
+      193 +  const inner = new Uint8Array(BLOCK + msg.length);           
+      194 +  inner.set(ipad); inner.set(msg, BLOCK);                     
+      195 +  const innerHash = sha256Bytes(inner);                       
+      196 +                                                              
+      197 +  const outer = new Uint8Array(BLOCK + 32);                   
+      198 +  outer.set(opad); outer.set(innerHash, BLOCK);               
+      199 +  return sha256Bytes(outer);                                  
+      200  }
+      201  
+      202 +function bytesToHex(bytes: Uint8Array): string {              
+      203 +  return Array.from(bytes).map((b) => b.toString(16).padStart(
+          +2, '0')).join('');                                            
+      204 +}                                                             
+      205 +                                                              
+      206  /**
+      207   * Derive the SigV4 signing key via HMAC chaining
+      208   */
+      128 -async function getSignatureKey(                               
+      129 -  secret: string,                                             
+      130 -  date: string,                                               
+      131 -  region: string,                                             
+      132 -  service: string                                             
+      133 -): Promise<ArrayBuffer> {                                     
+      134 -  const kDate = await hmacSHA256('AWS4' + secret, date);      
+      135 -  const kRegion = await hmacSHA256(kDate, region);            
+      136 -  const kService = await hmacSHA256(kRegion, service);        
+      209 +function getSignatureKey(secret: string, date: string, region:
+          + string, service: string): Uint8Array {                       
+      210 +  const kDate    = hmacSHA256('AWS4' + secret, date);         
+      211 +  const kRegion  = hmacSHA256(kDate, region);                 
+      212 +  const kService = hmacSHA256(kRegion, service);              
+      213    return hmacSHA256(kService, 'aws4_request');
+      214  }
+      215  
+      216  /**
+      141 - * Convert an ArrayBuffer to a lowercase hex string           
+      142 - */                                                           
+      143 -function bufToHex(buf: ArrayBuffer): string {                 
+      144 -  return Array.from(new Uint8Array(buf))                      
+      145 -    .map((b) => b.toString(16).padStart(2, '0'))              
+      146 -    .join('');                                                
+      147 -}                                                             
+      148 -                                                              
+      149 -/**                                                           
+      150 - * Sign an AWS Bedrock request using Signature Version 4      
+      217 + * Sign an AWS Bedrock request using Signature Version 4 (pure
+          + JS, no Web Crypto)                                           
+      218   *
+      219   * @param credentials - AWS credentials
+      220   * @param method - HTTP method (POST)
+     ...
+      222   * @param body - Request body string
+      223   * @returns Headers containing Authorization, x-amz-date, and 
+           x-amz-content-sha256
+      224   */
+      158 -export async function signBedrockRequest(                     
+      225 +export function signBedrockRequest(                           
+      226    credentials: BedrockCredentials,
+      227    method: string,
+      228    url: string,
+      229    body: string
+      163 -): Promise<{ Authorization: string; 'x-amz-date': string; 'x-a
+          -mz-content-sha256': string }> {                               
+      230 +): { Authorization: string; 'x-amz-date': string; 'x-amz-conte
+          +nt-sha256': string } {                                        
+      231    const service = 'bedrock';
+      165 -  // Parse URL manually — Figma plugin sandbox does not have U
+          -RL constructor                                                
+      232 +  // Parse URL manually — Figma plugin sandbox lacks URL const
+          +ructor                                                        
+      233    const withoutProtocol = url.replace(/^https?:\/\//, '');
+      234    const slashIndex = withoutProtocol.indexOf('/');
+      235    const host = slashIndex === -1 ? withoutProtocol : withoutPr
+           otocol.slice(0, slashIndex);
+      236    const canonicalUri = slashIndex === -1 ? '/' : withoutProtoc
+           ol.slice(slashIndex);
+      170 -  const canonicalQueryString = ''; // No query params for invo
+          -ke                                                            
+      237 +  const canonicalQueryString = '';                            
+      238  
+      172 -  // Build datetime strings                                   
+      239    const now = new Date();
+      174 -  const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, 
+          -'').slice(0, 15) + 'Z'; // YYYYMMDDTHHmmssZ                   
+      175 -  const dateStamp = amzDate.slice(0, 8); // YYYYMMDD          
+      240 +  const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, 
+          +'').slice(0, 15) + 'Z';                                       
+      241 +  const dateStamp = amzDate.slice(0, 8);                      
+      242  
+      177 -  const payloadHash = await sha256(body);                     
+      243 +  const payloadHash = sha256Hex(body);                        
+      244  
+      179 -  // Canonical headers — must be sorted and lowercase         
+      245    const canonicalHeaders =
+      246      `content-type:application/json\n` +
+      247      `host:${host}\n` +
+     ...
+      259      payloadHash,
+      260    ].join('\n');
+      261  
+      197 -  // Credential scope                                         
+      262    const credentialScope = `${dateStamp}/${credentials.region}/
+           ${service}/aws4_request`;
+      263 +  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentia
+          +lScope, sha256Hex(canonicalRequest)].join('\n');              
+      264  
+      200 -  // String to sign                                           
+      201 -  const canonicalRequestHash = await sha256(canonicalRequest);
+      202 -  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentia
+          -lScope, canonicalRequestHash].join('\n');                     
+      265 +  const signingKey = getSignatureKey(credentials.secretAccessK
+          +ey, dateStamp, credentials.region, service);                  
+      266 +  const signature = bytesToHex(hmacSHA256(signingKey, stringTo
+          +Sign));                                                       
+      267  
+      204 -  // Signing key and signature                                
+      205 -  const signingKey = await getSignatureKey(credentials.secretA
+          -ccessKey, dateStamp, credentials.region, service);            
+      206 -  const signatureBuffer = await hmacSHA256(signingKey, stringT
+          -oSign);                                                       
+      207 -  const signature = bufToHex(signatureBuffer);                
+      268 +  const authorization =                                       
+      269 +    `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${
+          +credentialScope}, ` +                                         
+      270 +    `SignedHeaders=${signedHeaders}, Signature=${signature}`; 
+      271  
+      272 +  return {                                                    
+      273 +    Authorization: authorization,                             
+      274 +    'x-amz-date': amzDate,                                    
+      275 +    'x-amz-content-sha256': payloadHash,                      
+      276 +  };                                                          
+      277 +}                                                             
+      278 +                                                              
+      279    const authorization =
+      280      `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${
+           credentialScope}, ` +
+      281      `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+⏺ Now signBedrockRequest is no longer async, so update the call site in
+  index.ts:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 1 line, removed 1 line
+      198      const encodedModel = encodeURIComponent(config.model);
+      199      endpoint = `https://bedrock-runtime.${creds.region}.amazon
+           aws.com/model/${encodedModel}/invoke`;
+      200      bodyToSend = JSON.stringify(requestBody);
+      201 -    const sigHeaders = await signBedrockRequest(creds, 'POST',
+          - endpoint, bodyToSend);                                       
+      201 +    const sigHeaders = signBedrockRequest(creds, 'POST', endpo
+          +int, bodyToSend);                                             
+      202      Object.assign(headers, sigHeaders);
+      203    }
+      204  
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  Error: Exit code 1
+
+     > figmalint@2.4.0 prebuild
+     > npm run clean
+
+
+     > figmalint@2.4.0 clean
+     > rm -rf dist
+
+
+     … +38 lines (ctrl+o to see all)
+
+⏺ There's a stray } left over from the old signBedrockRequest closing brace. Let
+   me check:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ That closing brace looks correct. The issue is likely an unmatched brace
+  elsewhere. Let me check around the end of the old block that was replaced:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Bash(node -e "
+      const fs = require('fs');…)
+  ⎿  Extra } at line 288
+
+⏺ Line 288 is the closing brace of signBedrockRequest — but the function
+  definition starts before it. Let me check the full function opening:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ The brace count from my node script is wrong — the template literals with
+  ${...} are being counted as braces. Let me check the actual esbuild error more
+   carefully. Line 288 is the } closing signBedrockRequest, so there must be an
+  unbalanced brace somewhere inside the new block. Let me look at the full new
+  signing section:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ The code looks correct. The esbuild error says "Unexpected }" at line 288 —
+  esbuild parses TypeScript, so it might be tripping on the h variable shadowing
+   h7 in the SHA-256 loop (we use h as both a loop variable and the initial h7).
+   That's valid JS/TS but let me check the actual esbuild message more carefully
+   — "Unexpected }" usually means a syntax error before it. Let me just try a
+  direct TypeScript compile to get a cleaner error:
+
+⏺ Bash(npx tsc --noEmit --strict false src/api/providers/bedrock.ts 2>&1 | head
+      -30)
+  ⎿  src/api/providers/bedrock.ts(288,1): error TS1128: Declaration or stat
+     ement expected.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Line 288 is } which closes signBedrockRequest. The compiler says this } is
+  unexpected — meaning the function is already closed somewhere earlier. The h =
+   g; g = f; line in the SHA-256 loop reassigns h (which shadows the outer h7
+  local variable), but the real issue is that variable h used inside the loop
+  shadows the outer scope in a way that confuses the block counting. Let me
+  rename the SHA-256 inner loop variable h to hh to avoid any ambiguity, and
+  also check if there's a missing closing brace in the function body:
+
+⏺ Bash(node -e "
+      const fs = require('fs');…)
+  ⎿  EXTRA } at line 288 : }
+⏺ Bash(node -e "
+      const fs = require('fs');…)
+  ⎿  [eval]:12
+       if (depth \!== before) console.log('Line', i+1, ': depth', before, '
+     ->', depth, '|', src.split('\n')[i].trim().substring(0,60));
+     … +10 lines (ctrl+o to expand)
+
+⏺ Bash(node << 'SCRIPT'
+      const fs = require('fs');…)
+  ⎿  L8 depth:0->1  | import {
+     L17 depth:1->0  | } from './types';
+     L26 depth:0->1  | export interface BedrockCredentials {
+     … +56 lines (ctrl+o to expand)
+
+⏺ The problem is clear: signBedrockRequest closes at line 277 but there's a
+  stray return {...} block at lines 283-288 outside of it. That's leftover from
+  the old function that wasn't fully replaced. Let me see exactly what's there:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Lines 279-288 are orphaned code from the old function's tail end. Remove them:
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 1 line, removed 12 lines
+      276    };
+      277  }
+      278  
+      279 -  const authorization =                                       
+      280 -    `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${
+          -credentialScope}, ` +                                         
+      281 -    `SignedHeaders=${signedHeaders}, Signature=${signature}`; 
+      282 -                                                              
+      283 -  return {                                                    
+      284 -    Authorization: authorization,                             
+      285 -    'x-amz-date': amzDate,                                    
+      286 -    'x-amz-content-sha256': payloadHash,                      
+      287 -  };                                                          
+      288 -}                                                             
+      289 -                                                              
+      290 -// ===========================================================
+          -==================                                            
+      279 +// ===========================================================
+          +==================// =========================================
+          +====================================                          
+      280  // Model Definitions
+      281  // ===========================================================
+           ==================
+      282  
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Clean build. Reload and try again — the pure-JS SHA-256 and HMAC
+  implementation requires nothing from the browser or Node environment, only
+  Uint8Array, Uint32Array, and DataView which are all available in the Figma
+  plugin sandbox.
+
+✻ Sautéed for 2m 49s
+
+❯ a little further this time but still an error. do we have the construction of 
+ teh bedrock endpoit correct... should it not be more particular to my aws      
+instance? honestly dont know, jsut asking: Making AWS Bedrock API call to       
+https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonn 
+et-20241022-v2%3A0/invoke...                                                    
+VM2984:6  POST https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic. 
+claude-3-5-sonnet-20241022-v2%3A0/invoke 403 (Forbidden)                        
+onmessage @ VM2984:6                                                            
+postMessage                                                                     
+postMessage @ figma_app-cd6064e947741372.min.js.br:362                          
+await in postMessage                                                            
+(anonymous) @ 6005-63294d549fcb1e6d.min.js.br:925                               
+postMessageAndWait @ 6005-63294d549fcb1e6d.min.js.br:925                        
+fetch @ 6005-63294d549fcb1e6d.min.js.br:925                                     
+(anonymous) @ 6005-63294d549fcb1e6d.min.js.br:899                               
+(anonymous) @ 6005-63294d549fcb1e6d.min.js.br:899                               
+fetch @ VM2798:7                                                                
+callProvider @ PLUGIN_9_SOURCE:2446                                             
+processEnhancedAnalysis @ PLUGIN_9_SOURCE:4143                                  
+await in processEnhancedAnalysis                                                
+handleEnhancedAnalyze @ PLUGIN_9_SOURCE:6269                                    
+await in handleEnhancedAnalyze                                                  
+handleUIMessage @ PLUGIN_9_SOURCE:6069                                          
+callFunction @ 6005-63294d549fcb1e6d.min.js.br:899                              
+iframeMessageHandler @ 6005-63294d549fcb1e6d.min.js.br:814                      
+S.toplevelWindowMessageChannel.port2.onmessage @                                
+figma_app-cd6064e947741372.min.js.br:342                                        
+vendor-core-ade2edecaf4781c7.min.js.br:54 Error during enhanced analysis:       
+LLMError: AWS Bedrock Error (403): Access denied. Please check your AWS         
+credentials and IAM permissions.                                                
+    at BedrockProvider.handleError (PLUGIN_9_SOURCE:2360:18)                    
+    at callProvider (PLUGIN_9_SOURCE:2458:24)                                   
+    at async processEnhancedAnalysis (PLUGIN_9_SOURCE:4143:27)                  
+    at async handleEnhancedAnalyze (PLUGIN_9_SOURCE:6269:22)                    
+    at async handleUIMessage (PLUGIN_9_SOURCE:6069:11)                          
+
+⏺ The endpoint format is correct — Bedrock is the same URL for every AWS account
+   in a region, no account-specific path needed. The %3A is correct URL-encoding
+   of the : in the model ID.
+
+  The 403 could be either a wrong SigV4 signature OR missing IAM permissions,
+  but right now we're throwing a generic message and losing the actual AWS error
+   body. Let me fix that first so you can see what AWS is actually saying:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 1 line, removed 1 line
+      489        case 401:
+      490        case 403:
+      491          return new LLMError(
+      492 -          `AWS Bedrock Error (${statusCode}): Access denied. P
+          -lease check your AWS credentials and IAM permissions.`,       
+      492 +          `AWS Bedrock Error (${statusCode}): ${errorMessage}.
+          + Check IAM permissions and that the model is enabled in your r
+          +egion.`,                                                      
+      493            LLMErrorCode.INVALID_API_KEY,
+      494            statusCode
+      495          );
+
+⏺ Also add a console log in callProvider so the raw error body is always
+  visible:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 1 line
+      219          errorData = await response.text();
+      220        }
+      221  
+      222 +      console.error(`${provider.name} error ${response.status}
+          +:`, JSON.stringify(errorData));                               
+      223        throw provider.handleError(response.status, errorData);
+      224      }
+      225  
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Reload and run analyze again. You should now see two things in the console:
+
+  1. A line like AWS Bedrock error 403: {"message":"...","code":"..."} — this is
+   the raw AWS response body
+  2. The updated error message in the UI will include whatever AWS actually said
+
+  The two most likely messages you'll see:
+  - "The request signature we calculated does not match the signature you 
+  provided" → SigV4 bug in the code, we fix it
+  - "User: arn:aws:iam::... is not authorized to perform: bedrock:InvokeModel" →
+   IAM permissions issue, you add the policy
+  - "Could not resolve the foundation model" → Model isn't enabled in your
+  region
+
+✻ Crunched for 1m 51s
+
+❯ turns out i didn't actually add the right permissions in AWS. i did so and    
+got further, this time the error is: vendor-core-ade2edec…4781c7.min.js.br:54   
+Error during enhanced analysis: LLMError: AWS Bedrock Error (403): The request  
+signature we calculated does not match the signature you provided. Check your   
+AWS Secret Access Key and signing method. Consult the service documentation for 
+ details.                                                                       
+                                                                                
+The Canonical String for this request should have been                          
+'POST                                                                           
+/model/anthropic.claude-3-5-sonnet-20241022-v2%253A0/invoke                     
+                                                                                
+content-type:application/json                                                   
+host:bedrock-runtime.us-east-1.amazonaws.com                                    
+x-amz-content-sha256:b897f689a71495867a0aa995df6bb2d6214a87fbdb2f23514f4fd06836 
+c19587                                                                          
+x-amz-date:20260306T023734Z                                                     
+                                                                                
+content-type;host;x-amz-content-sha256;x-amz-date                               
+b897f689a71495867a0aa995df6bb2d6214a87fbdb2f23514f4fd06836c19587'               
+                                                                                
+The String-to-Sign should have been                                             
+'AWS4-HMAC-SHA256                                                               
+20260306T023734Z                                                                
+20260306/us-east-1/bedrock/aws4_request                                         
+2001bb930d926d49c10f10f24ba86775120169f50c20aeb2e686473ab692223b'               
+. Check IAM permissions and that the model is enabled in your region.           
+    at BedrockProvider.handleError (PLUGIN_10_SOURCE:2360:18)                   
+    at callProvider (PLUGIN_10_SOURCE:2459:24)                                  
+    at async processEnhancedAnalysis (PLUGIN_10_SOURCE:4144:27)                 
+    at async handleEnhancedAnalyze (PLUGIN_10_SOURCE:6270:22)                   
+    at async handleUIMessage (PLUGIN_10_SOURCE:6070:11)                         
+                                                                                
+                                                                                
+
+⏺ The error is very specific and actionable. AWS is telling us exactly what
+  canonical string it expected vs what we sent. The difference is in the path:
+
+  - We sent: /model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/invoke
+  - AWS expected: /model/anthropic.claude-3-5-sonnet-20241022-v2%253A0/invoke
+
+  The %253A means AWS re-applies SigV4 URI encoding to the URL path when
+  building the canonical string — so % in %3A gets encoded again to %25,
+  yielding %253A. Our code currently uses the raw URL path without this second
+  encoding pass. Fix:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 27 lines, removed 1 line
+      214  }
+      215  
+      216  /**
+      217 + * SigV4 URI encoding: encode every byte except A-Za-z0-9 - . 
+          +_ ~                                                           
+      218 + * Applied to each path segment in the canonical URI (not to t
+          +he / separators).                                             
+      219 + * This means a path already containing %3A will have its % en
+          +coded to %25, giving %253A.                                   
+      220 + */                                                           
+      221 +function sigV4Encode(str: string): string {                   
+      222 +  let result = '';                                            
+      223 +  for (let i = 0; i < str.length; i++) {                      
+      224 +    const ch = str[i];                                        
+      225 +    if (                                                      
+      226 +      (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || 
+          +(ch >= '0' && ch <= '9') ||                                   
+      227 +      ch === '-' || ch === '.' || ch === '_' || ch === '~'    
+      228 +    ) {                                                       
+      229 +      result += ch;                                           
+      230 +    } else {                                                  
+      231 +      result += '%' + str.charCodeAt(i).toString(16).toUpperCa
+          +se().padStart(2, '0');                                        
+      232 +    }                                                         
+      233 +  }                                                           
+      234 +  return result;                                              
+      235 +}                                                             
+      236 +                                                              
+      237 +/**                                                           
+      238   * Sign an AWS Bedrock request using Signature Version 4 (pure
+            JS, no Web Crypto)
+      239   *
+      240   * @param credentials - AWS credentials
+     ...
+      254    const withoutProtocol = url.replace(/^https?:\/\//, '');
+      255    const slashIndex = withoutProtocol.indexOf('/');
+      256    const host = slashIndex === -1 ? withoutProtocol : withoutPr
+           otocol.slice(0, slashIndex);
+      236 -  const canonicalUri = slashIndex === -1 ? '/' : withoutProtoc
+          -ol.slice(slashIndex);                                         
+      257 +  const rawPath = slashIndex === -1 ? '/' : withoutProtocol.sl
+          +ice(slashIndex);                                              
+      258 +                                                              
+      259 +  // SigV4 canonical URI: re-encode each path segment per the 
+          +SigV4 spec.                                                   
+      260 +  // Each segment is SigV4-encoded (everything except A-Za-z0-
+          +9-._~), so a                                                  
+      261 +  // URL-encoded % in the raw path (e.g. %3A) becomes %25 → %2
+          +53A.                                                          
+      262 +  const canonicalUri = rawPath.split('/').map(sigV4Encode).joi
+          +n('/');                                                       
+      263    const canonicalQueryString = '';
+      264  
+      265    const now = new Date();
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Clean. Reload and try again. The canonical URI in our signature will now match
+   what AWS computes on their end — each path segment gets SigV4-encoded, so the
+   % in the already-URL-encoded %3A gets re-encoded to %25, producing the %253A
+  that AWS expected.
+
+✻ Crunched for 1m 25s
+
+❯ vendor-core-ade2edecaf4781c7.min.js.br:54 AWS Bedrock error 400:              
+{"message":"Invocation of model ID anthropic.claude-3-5-sonnet-20241022-v2:0    
+with on-demand throughput isn’t supported. Retry your request with the ID or    
+ARN of an inference profile that contains this model."}                         
+(anonymous) @ vendor-core-ade2edecaf4781c7.min.js.br:54                         
+(anonymous) @ 6005-63294d549fcb1e6d.min.js.br:899                               
+error @ VM3640:7                                                                
+callProvider @ PLUGIN_12_SOURCE:2471                                            
+await in callProvider                                                           
+processEnhancedAnalysis @ PLUGIN_12_SOURCE:4157                                 
+await in processEnhancedAnalysis                                                
+handleEnhancedAnalyze @ PLUGIN_12_SOURCE:6283                                   
+await in handleEnhancedAnalyze                                                  
+handleUIMessage @ PLUGIN_12_SOURCE:6083                                         
+callFunction @ 6005-63294d549fcb1e6d.min.js.br:899                              
+iframeMessageHandler @ 6005-63294d549fcb1e6d.min.js.br:814                      
+S.toplevelWindowMessageChannel.port2.onmessage @                                
+figma_app-cd6064e947741372.min.js.br:342                                        
+vendor-core-ade2edecaf4781c7.min.js.br:54 Error during enhanced analysis:       
+LLMError: AWS Bedrock Error (400): Invocation of model ID                       
+anthropic.claude-3-5-sonnet-20241022-v2:0 with on-demand throughput isn’t       
+supported. Retry your request with the ID or ARN of an inference profile that   
+contains this model.. Please check your request.                                
+    at BedrockProvider.handleError (PLUGIN_12_SOURCE:2366:18)                   
+    at callProvider (PLUGIN_12_SOURCE:2472:24)                                  
+    at async processEnhancedAnalysis (PLUGIN_12_SOURCE:4157:27)                 
+    at async handleEnhancedAnalyze (PLUGIN_12_SOURCE:6283:22)                   
+    at async handleUIMessage (PLUGIN_12_SOURCE:6083:11)                         
+
+⏺ This is a pure AWS config issue — not a code bug. Newer Claude models on
+  Bedrock require cross-region inference profiles instead of direct model IDs
+  for on-demand throughput. The profile ID is just {region-prefix}.{model-id}
+  (e.g. us.anthropic.claude-3-5-sonnet-20241022-v2:0). I can handle this
+  automatically by deriving the prefix from the selected region:
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/api/providers/index.ts)
+  ⎿  Added 7 lines, removed 2 lines
+      193    }
+      194  
+      195    if (providerId === 'bedrock') {
+      196 -    // Bedrock requires dynamic endpoint and SigV4-signed head
+          -ers                                                           
+      196 +    // Bedrock requires dynamic endpoint and SigV4-signed head
+          +ers.                                                          
+      197 +    // Newer Claude models require cross-region inference prof
+          +iles (e.g. us.anthropic.*)                                    
+      198 +    // instead of direct model IDs for on-demand throughput. T
+          +he profile ID is                                              
+      199 +    // {region-prefix}.{model-id} where prefix is the first se
+          +gment of the region name.                                     
+      200      const creds = parseBedrockCredentials(apiKey);
+      198 -    const encodedModel = encodeURIComponent(config.model);    
+      201 +    const regionPrefix = creds.region.split('-')[0]; // 'us', 
+          +'eu', 'ap'                                                    
+      202 +    const inferenceProfileId = `${regionPrefix}.${config.model
+          +}`;                                                           
+      203 +    const encodedModel = encodeURIComponent(inferenceProfileId
+          +);                                                            
+      204      endpoint = `https://bedrock-runtime.${creds.region}.amazon
+           aws.com/model/${encodedModel}/invoke`;
+      205      bodyToSend = JSON.stringify(requestBody);
+      206      const sigHeaders = signBedrockRequest(creds, 'POST', endpo
+           int, bodyToSend);
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Built clean. Reload and try again.
+
+  The fix: for us-east-1 your model anthropic.claude-3-5-sonnet-20241022-v2:0
+  will now be called as us.anthropic.claude-3-5-sonnet-20241022-v2:0 — the
+  system-defined cross-region inference profile that AWS requires for on-demand
+  throughput on newer models. This mapping is automatic for all supported
+  regions (us-* → us., eu-* → eu., ap-* → ap.).
+
+✻ Worked for 46s
+
+❯ can we use this for sonnet instead please:                                    
+us.anthropic.claude-sonnet-4-5-20250929-v1:0                                    
+
+⏺ The model ID stored in our config should be without the us. prefix since we
+  add that dynamically — so the stored ID is
+  anthropic.claude-sonnet-4-5-20250929-v1:0. Need to update it in three places:
+  bedrock.ts, types.ts, and the HTML.
+
+⏺ Update(src/api/providers/bedrock.ts)
+  ⎿  Added 2 lines, removed 2 lines
+      308  
+      309  export const BEDROCK_MODELS: LLMModel[] = [
+      310    {
+      311 -    id: 'anthropic.claude-3-5-sonnet-20241022-v2:0',          
+      312 -    name: 'Claude 3.5 Sonnet',                                
+      311 +    id: 'anthropic.claude-sonnet-4-5-20250929-v1:0',          
+      312 +    name: 'Claude Sonnet 4.5',                                
+      313      description: 'Standard model - Balanced performance and co
+           st, recommended for most tasks',
+      314      tier: 'standard',
+      315      contextWindow: 200000,
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Error editing file
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 2 lines, removed 2 lines
+      458   */
+      459  export const BEDROCK_MODELS: LLMModel[] = [
+      460    {
+      461 -    id: 'anthropic.claude-3-5-sonnet-20241022-v2:0',          
+      462 -    name: 'Claude 3.5 Sonnet',                                
+      461 +    id: 'anthropic.claude-sonnet-4-5-20250929-v1:0',          
+      462 +    name: 'Claude Sonnet 4.5',                                
+      463      description: 'Standard model - Balanced performance and co
+           st, recommended for most tasks',
+      464      tier: 'standard',
+      465      contextWindow: 200000,
+
+⏺ Update(src/api/providers/types.ts)
+  ⎿  Added 1 line, removed 1 line
+      497    anthropic: 'claude-sonnet-4-5-20250929',
+      498    openai: 'gpt-5.2',
+      499    google: 'gemini-2.5-pro',
+      500 -  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',       
+      500 +  bedrock: 'anthropic.claude-sonnet-4-5-20250929-v1:0',       
+      501  };
+      502  
+      503  // ===========================================================
+           ==================
+
+⏺ Now the HTML:
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 1 line, removed 1 line
+      2378                  </optgroup>
+      2379                  <!-- AWS Bedrock (Claude) Models -->
+      2380                  <optgroup label="AWS Bedrock (Claude)" id="be
+            drock-models" style="display: none;">
+      2381 -                  <option value="anthropic.claude-3-5-sonnet-
+           -20241022-v2:0">Claude 3.5 Sonnet (Recommended)</option>      
+      2381 +                  <option value="anthropic.claude-sonnet-4-5-
+           +20250929-v1:0">Claude Sonnet 4.5 (Recommended)</option>      
+      2382                    <option value="anthropic.claude-3-5-haiku-2
+            0241022-v1:0">Claude 3.5 Haiku (Fast)</option>
+      2383                    <option value="anthropic.claude-3-opus-2024
+            0229-v1:0">Claude 3 Opus (Flagship)</option>
+      2384                  </optgroup>
+
+⏺ Update(ui-enhanced.html)
+  ⎿  Added 1 line, removed 1 line
+      2814          name: 'AWS Bedrock',
+      2815          placeholder: 'AWS credentials below',
+      2816          hint: 'Enter your IAM Access Key ID and Secret below'
+            ,
+      2817 -        defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v
+           -2:0'                                                         
+      2817 +        defaultModel: 'anthropic.claude-sonnet-4-5-20250929-v
+           +1:0'                                                         
+      2818        }
+      2819      };
+      2820  
+
+⏺ Bash(npm run build 2>&1)
+  ⎿  > figmalint@2.4.0 prebuild
+     > npm run clean
+     … +20 lines (ctrl+o to expand)
+
+⏺ Done. The call will now use inference profile
+  us.anthropic.claude-sonnet-4-5-20250929-v1:0 (the us. is prepended
+  automatically from your region). You'll need to make sure that model is
+  enabled in your Bedrock console — same Model Access page, look for Claude
+  Sonnet 4.5.
+
+❯ is there an established way to include a record of our session here that I    
+can commit to the repo that will better enable others to pick up where we left  
+off. I believe I saw this in someone's repo, the bascially had a directory with 
+ a series of AI coding sessions.                                                
+
+  Searched for 2 patterns (ctrl+o to expand)
+⏺ There are two complementary conventions worth knowing about:
+
+  ★ Insight ─────────────────────────────────────
+  Two distinct layers of AI session documentation exist:
+  - CLAUDE.md — loaded automatically by Claude Code at session start, acts as
+  persistent project context and instructions. Best for stable facts:
+  architecture decisions, conventions, gotchas.
+  - docs/sessions/ — a chronological log directory, one file per session. Best
+  for narrative: what was built, what failed, why decisions were made. This is
+  what you likely saw in another repo.
+
+  The two work together: sessions accumulate detail, CLAUDE.md distills the
+  durable parts.
+  ─────────────────────────────────────────────────
+
+  For this repo I'd create both. The CLAUDE.md is the higher-value one for
+  Claude Code specifically — it's automatically injected into context on every
+  new session. Let me set both up:
+
+⏺ Write(CLAUDE.md)
+  ⎿  Wrote 46 lines to CLAUDE.md
+       1 # FigmaLint — Claude Code Project Context
+       2 
+       3 ## What This Is
+       4 A Figma plugin that analyzes design components using LLMs. Runs 
+         in the **Figma plugin sandbox** (main thread = `code.ts`, UI thr
+         ead = `ui-enhanced.html`). Built with esbuild, TypeScript.
+       5 
+       6 ## Build
+       7 ```bash
+       8 npm run build   # clean + bundle + copy assets to dist/
+       9 ```
+      10 Output: `dist/code.js` + `dist/ui-enhanced.html` + `dist/manifes
+         t.json`
+     … +36 lines (ctrl+o to expand)
+
+⏺ Bash(mkdir -p /Users/L009916/Code/Lilly/LDS/southleft/figmalint/docs/sessions)
+  ⎿  Done
+
+⏺ Write(docs/sessions/2026-03-20-aws-bedrock-provider.md)
+  ⎿  Wrote 40 lines to docs/sessions/2026-03-20-aws-bedrock-provider.md
+       1 # Session: Add AWS Bedrock as AI Provider
+       2 **Date:** 2026-03-20
+       3 **Branch:** main
+       4 
+       5 ## Goal
+       6 Add AWS Bedrock as a fourth LLM provider so Claude models can be
+          accessed via IAM credentials instead of an Anthropic API key — 
+         useful for enterprise licensing and per-user IAM credential dist
+         ribution.
+       7 
+       8 ## What Was Built
+       9 
+      10 ### New file: `src/api/providers/bedrock.ts`
+     … +30 lines (ctrl+o to expand)
+
+⏺ ★ Insight ─────────────────────────────────────
+  CLAUDE.md vs session logs serve different readers:
+  - CLAUDE.md is for the next Claude session — it's auto-injected as context, so
+   it should contain facts that are always true (constraints, conventions,
+  gotchas). Keep it concise; Claude will read every word.
+  - Session logs are for humans — they're narrative, include the failures, and
+  explain the why behind decisions. The bugs-in-order table is especially
+  valuable because it prevents the next person from hitting the same sequence.
+  ─────────────────────────────────────────────────
+
+  Two files created:
+  - CLAUDE.md — architecture overview, Figma sandbox constraints,
+  Bedrock-specific gotchas, the isValidApiKeyFormat dual-copy warning. Claude
+  Code will load this automatically next session.
+  - docs/sessions/2026-03-20-aws-bedrock-provider.md — full narrative of this
+  session including the bug table with every error hit and its fix.
+
+  Both are ready to commit. Future sessions can append new files to
+  docs/sessions/ and update CLAUDE.md if any new stable facts emerge (e.g. if
+  you add another provider, the "adding a provider" checklist there will save
+  someone from missing message-handler.ts again).
+
+✻ Churned for 1m 41s

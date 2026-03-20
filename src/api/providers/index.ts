@@ -10,6 +10,7 @@
 import { anthropicProvider } from './anthropic';
 import { OpenAIProvider as openaiProvider } from './openai';
 import { googleProvider } from './google';
+import { bedrockProvider, parseBedrockCredentials, signBedrockRequest } from './bedrock';
 import {
   LLMProvider,
   ProviderId,
@@ -29,6 +30,7 @@ export * from './types';
 export { anthropicProvider } from './anthropic';
 export { OpenAIProvider as openaiProvider } from './openai';
 export { googleProvider } from './google';
+export { bedrockProvider } from './bedrock';
 
 // =============================================================================
 // Provider Registry
@@ -41,12 +43,13 @@ export const providers: ProviderRegistry = {
   anthropic: anthropicProvider,
   openai: openaiProvider,
   google: googleProvider,
+  bedrock: bedrockProvider,
 };
 
 /**
  * Array of all provider IDs for iteration
  */
-export const providerIds: ProviderId[] = ['anthropic', 'openai', 'google'];
+export const providerIds: ProviderId[] = ['anthropic', 'openai', 'google', 'bedrock'];
 
 /**
  * Provider metadata for UI display
@@ -66,6 +69,11 @@ export const providerMeta: Record<ProviderId, { name: string; icon: string; desc
     name: 'Google (Gemini)',
     icon: '🔵',
     description: 'Gemini models with multimodal understanding and large context windows',
+  },
+  bedrock: {
+    name: 'AWS Bedrock (Claude)',
+    icon: '🟠',
+    description: 'Claude models via AWS Bedrock for enterprise IAM-based access',
   },
 };
 
@@ -175,11 +183,28 @@ export async function callProvider(
   const requestBody = provider.formatRequest(config);
   const headers = provider.getHeaders(apiKey);
 
-  // Determine endpoint (Google has special URL handling)
+  // Determine endpoint (Google and Bedrock have special URL handling)
   let endpoint = provider.endpoint;
+  let bodyToSend: string | undefined;
+
   if (providerId === 'google') {
     // Google requires model and key in URL
     endpoint = `${provider.endpoint}/${config.model}:generateContent?key=${apiKey.trim()}`;
+  }
+
+  if (providerId === 'bedrock') {
+    // Bedrock requires dynamic endpoint and SigV4-signed headers.
+    // Newer Claude models require cross-region inference profiles (e.g. us.anthropic.*)
+    // instead of direct model IDs for on-demand throughput. The profile ID is
+    // {region-prefix}.{model-id} where prefix is the first segment of the region name.
+    const creds = parseBedrockCredentials(apiKey);
+    const regionPrefix = creds.region.split('-')[0]; // 'us', 'eu', 'ap'
+    const inferenceProfileId = `${regionPrefix}.${config.model}`;
+    const encodedModel = encodeURIComponent(inferenceProfileId);
+    endpoint = `https://bedrock-runtime.${creds.region}.amazonaws.com/model/${encodedModel}/invoke`;
+    bodyToSend = JSON.stringify(requestBody);
+    const sigHeaders = signBedrockRequest(creds, 'POST', endpoint, bodyToSend);
+    Object.assign(headers, sigHeaders);
   }
 
   try {
@@ -188,7 +213,7 @@ export async function callProvider(
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify(requestBody),
+      body: bodyToSend ?? JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -199,6 +224,7 @@ export async function callProvider(
         errorData = await response.text();
       }
 
+      console.error(`${provider.name} error ${response.status}:`, JSON.stringify(errorData));
       throw provider.handleError(response.status, errorData);
     }
 

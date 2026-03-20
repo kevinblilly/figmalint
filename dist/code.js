@@ -1221,7 +1221,8 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
   var DEFAULT_MODELS = {
     anthropic: "claude-sonnet-4-6",
     openai: "gpt-5.4",
-    google: "gemini-3.1-pro-preview"
+    google: "gemini-3.1-pro-preview",
+    bedrock: "anthropic.claude-sonnet-4-5-20250929-v1:0"
   };
 
   // src/api/providers/anthropic.ts
@@ -1973,11 +1974,454 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
   };
   var googleProvider = new GoogleProvider();
 
+  // src/api/providers/bedrock.ts
+  function parseBedrockCredentials(jsonStr) {
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (e) {
+      throw new Error("Invalid credentials: must be valid JSON");
+    }
+    const { accessKeyId, secretAccessKey, region } = parsed;
+    if (!accessKeyId || typeof accessKeyId !== "string" || !accessKeyId.trim()) {
+      throw new Error("Missing or empty accessKeyId");
+    }
+    if (!secretAccessKey || typeof secretAccessKey !== "string" || !secretAccessKey.trim()) {
+      throw new Error("Missing or empty secretAccessKey");
+    }
+    if (!region || typeof region !== "string" || !region.trim()) {
+      throw new Error("Missing or empty region");
+    }
+    return {
+      accessKeyId: accessKeyId.trim(),
+      secretAccessKey: secretAccessKey.trim(),
+      region: region.trim()
+    };
+  }
+  function encodeUtf8(str) {
+    const bytes = [];
+    for (let i = 0; i < str.length; i++) {
+      let code = str.charCodeAt(i);
+      if (code < 128) {
+        bytes.push(code);
+      } else if (code < 2048) {
+        bytes.push(192 | code >> 6, 128 | code & 63);
+      } else if (code >= 55296 && code <= 56319) {
+        const lo = str.charCodeAt(++i);
+        code = 65536 + (code - 55296 << 10) + (lo - 56320);
+        bytes.push(
+          240 | code >> 18,
+          128 | code >> 12 & 63,
+          128 | code >> 6 & 63,
+          128 | code & 63
+        );
+      } else {
+        bytes.push(224 | code >> 12, 128 | code >> 6 & 63, 128 | code & 63);
+      }
+    }
+    return new Uint8Array(bytes);
+  }
+  var SHA256_K = new Uint32Array([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+  function rotr32(x, n) {
+    return x >>> n | x << 32 - n;
+  }
+  function sha256Bytes(data) {
+    let h0 = 1779033703, h1 = 3144134277, h2 = 1013904242, h3 = 2773480762;
+    let h4 = 1359893119, h5 = 2600822924, h6 = 528734635, h7 = 1541459225;
+    const len = data.length;
+    const paddedLen = Math.ceil((len + 9) / 64) * 64;
+    const padded = new Uint8Array(paddedLen);
+    padded.set(data);
+    padded[len] = 128;
+    const view = new DataView(padded.buffer);
+    view.setUint32(paddedLen - 4, len * 8 >>> 0, false);
+    view.setUint32(paddedLen - 8, Math.floor(len / 536870912) >>> 0, false);
+    const w = new Uint32Array(64);
+    for (let offset = 0; offset < paddedLen; offset += 64) {
+      for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4, false);
+      for (let i = 16; i < 64; i++) {
+        const s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ w[i - 15] >>> 3;
+        const s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ w[i - 2] >>> 10;
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+      }
+      let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+      for (let i = 0; i < 64; i++) {
+        const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        const ch = e & f ^ ~e & g;
+        const temp1 = h + S1 + ch + SHA256_K[i] + w[i] >>> 0;
+        const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        const maj = a & b ^ a & c ^ b & c;
+        const temp2 = S0 + maj >>> 0;
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1 >>> 0;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2 >>> 0;
+      }
+      h0 = h0 + a >>> 0;
+      h1 = h1 + b >>> 0;
+      h2 = h2 + c >>> 0;
+      h3 = h3 + d >>> 0;
+      h4 = h4 + e >>> 0;
+      h5 = h5 + f >>> 0;
+      h6 = h6 + g >>> 0;
+      h7 = h7 + h >>> 0;
+    }
+    const result = new Uint8Array(32);
+    const rv = new DataView(result.buffer);
+    rv.setUint32(0, h0, false);
+    rv.setUint32(4, h1, false);
+    rv.setUint32(8, h2, false);
+    rv.setUint32(12, h3, false);
+    rv.setUint32(16, h4, false);
+    rv.setUint32(20, h5, false);
+    rv.setUint32(24, h6, false);
+    rv.setUint32(28, h7, false);
+    return result;
+  }
+  function sha256Hex(message) {
+    return Array.from(sha256Bytes(encodeUtf8(message))).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  function hmacSHA256(key, message) {
+    const BLOCK = 64;
+    let k = typeof key === "string" ? encodeUtf8(key) : key;
+    if (k.length > BLOCK) k = sha256Bytes(k);
+    const kPadded = new Uint8Array(BLOCK);
+    kPadded.set(k);
+    const ipad = new Uint8Array(BLOCK);
+    const opad = new Uint8Array(BLOCK);
+    for (let i = 0; i < BLOCK; i++) {
+      ipad[i] = kPadded[i] ^ 54;
+      opad[i] = kPadded[i] ^ 92;
+    }
+    const msg = typeof message === "string" ? encodeUtf8(message) : message;
+    const inner = new Uint8Array(BLOCK + msg.length);
+    inner.set(ipad);
+    inner.set(msg, BLOCK);
+    const innerHash = sha256Bytes(inner);
+    const outer = new Uint8Array(BLOCK + 32);
+    outer.set(opad);
+    outer.set(innerHash, BLOCK);
+    return sha256Bytes(outer);
+  }
+  function bytesToHex(bytes) {
+    return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  function getSignatureKey(secret, date, region, service) {
+    const kDate = hmacSHA256("AWS4" + secret, date);
+    const kRegion = hmacSHA256(kDate, region);
+    const kService = hmacSHA256(kRegion, service);
+    return hmacSHA256(kService, "aws4_request");
+  }
+  function sigV4Encode(str) {
+    let result = "";
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch >= "A" && ch <= "Z" || ch >= "a" && ch <= "z" || ch >= "0" && ch <= "9" || ch === "-" || ch === "." || ch === "_" || ch === "~") {
+        result += ch;
+      } else {
+        result += "%" + str.charCodeAt(i).toString(16).toUpperCase().padStart(2, "0");
+      }
+    }
+    return result;
+  }
+  function signBedrockRequest(credentials, method, url, body) {
+    const service = "bedrock";
+    const withoutProtocol = url.replace(/^https?:\/\//, "");
+    const slashIndex = withoutProtocol.indexOf("/");
+    const host = slashIndex === -1 ? withoutProtocol : withoutProtocol.slice(0, slashIndex);
+    const rawPath = slashIndex === -1 ? "/" : withoutProtocol.slice(slashIndex);
+    const canonicalUri = rawPath.split("/").map(sigV4Encode).join("/");
+    const canonicalQueryString = "";
+    const now = /* @__PURE__ */ new Date();
+    const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, "").slice(0, 15) + "Z";
+    const dateStamp = amzDate.slice(0, 8);
+    const payloadHash = sha256Hex(body);
+    const canonicalHeaders = `content-type:application/json
+host:${host}
+x-amz-content-sha256:${payloadHash}
+x-amz-date:${amzDate}
+`;
+    const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
+    const canonicalRequest = [
+      method.toUpperCase(),
+      canonicalUri,
+      canonicalQueryString,
+      canonicalHeaders,
+      signedHeaders,
+      payloadHash
+    ].join("\n");
+    const credentialScope = `${dateStamp}/${credentials.region}/${service}/aws4_request`;
+    const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, sha256Hex(canonicalRequest)].join("\n");
+    const signingKey = getSignatureKey(credentials.secretAccessKey, dateStamp, credentials.region, service);
+    const signature = bytesToHex(hmacSHA256(signingKey, stringToSign));
+    const authorization = `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    return {
+      Authorization: authorization,
+      "x-amz-date": amzDate,
+      "x-amz-content-sha256": payloadHash
+    };
+  }
+  var BEDROCK_MODELS = [
+    {
+      id: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+      name: "Claude Sonnet 4.5",
+      description: "Standard model - Balanced performance and cost, recommended for most tasks",
+      tier: "standard",
+      contextWindow: 2e5,
+      maxOutputTokens: 8192,
+      isDefault: true
+    },
+    {
+      id: "anthropic.claude-3-5-haiku-20241022-v1:0",
+      name: "Claude 3.5 Haiku",
+      description: "Economy model - Fast and cost-effective for routine tasks",
+      tier: "economy",
+      contextWindow: 2e5,
+      maxOutputTokens: 8192,
+      isDefault: false
+    },
+    {
+      id: "anthropic.claude-3-opus-20240229-v1:0",
+      name: "Claude 3 Opus",
+      description: "Flagship model - Most capable, best for complex analysis and reasoning",
+      tier: "flagship",
+      contextWindow: 2e5,
+      maxOutputTokens: 4096,
+      isDefault: false
+    }
+  ];
+  var BedrockProvider = class {
+    constructor() {
+      this.name = "AWS Bedrock";
+      this.id = "bedrock";
+      // Endpoint is dynamic (built per-request in callProvider) — placeholder value here
+      this.endpoint = "https://bedrock-runtime.us-east-1.amazonaws.com";
+      this.keyPrefix = "";
+      this.keyPlaceholder = "Enter AWS credentials below";
+      this.models = BEDROCK_MODELS;
+    }
+    /**
+     * Format a request for the Bedrock Claude invoke API.
+     * Same as Anthropic messages format but:
+     * - No `model` field (model is in the URL)
+     * - Uses `anthropic_version` in body instead of header
+     */
+    formatRequest(config) {
+      const request = {
+        anthropic_version: "bedrock-2023-05-31",
+        messages: [
+          {
+            role: "user",
+            content: config.prompt.trim()
+          }
+        ],
+        max_tokens: config.maxTokens
+      };
+      if (config.temperature !== void 0) {
+        request.temperature = config.temperature;
+      }
+      if (config.additionalParams) {
+        Object.assign(request, config.additionalParams);
+      }
+      return request;
+    }
+    /**
+     * Parse Bedrock API response (same structure as Anthropic)
+     */
+    parseResponse(response) {
+      const bedrockResponse = response;
+      if (!bedrockResponse.content || !Array.isArray(bedrockResponse.content)) {
+        throw new LLMError(
+          "Invalid response format from AWS Bedrock: missing content array",
+          "INVALID_REQUEST" /* INVALID_REQUEST */
+        );
+      }
+      const textContent = bedrockResponse.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      if (!textContent) {
+        throw new LLMError(
+          "Invalid response format from AWS Bedrock: no text content found",
+          "INVALID_REQUEST" /* INVALID_REQUEST */
+        );
+      }
+      return {
+        content: textContent.trim(),
+        model: bedrockResponse.model,
+        usage: bedrockResponse.usage ? {
+          promptTokens: bedrockResponse.usage.input_tokens,
+          completionTokens: bedrockResponse.usage.output_tokens,
+          totalTokens: bedrockResponse.usage.input_tokens + bedrockResponse.usage.output_tokens
+        } : void 0,
+        metadata: {
+          id: bedrockResponse.id,
+          stopReason: bedrockResponse.stop_reason
+        }
+      };
+    }
+    /**
+     * Validate Bedrock credentials JSON
+     */
+    validateApiKey(jsonStr) {
+      if (!jsonStr || typeof jsonStr !== "string" || !jsonStr.trim()) {
+        return {
+          isValid: false,
+          error: "AWS credentials required. Please enter your Access Key ID, Secret Access Key, and Region."
+        };
+      }
+      try {
+        parseBedrockCredentials(jsonStr);
+        return { isValid: true };
+      } catch (err) {
+        return {
+          isValid: false,
+          error: `Invalid AWS credentials: ${err instanceof Error ? err.message : "unknown error"}`
+        };
+      }
+    }
+    /**
+     * Get base headers — SigV4 headers are added dynamically in callProvider
+     */
+    getHeaders(_apiKey) {
+      return {
+        "content-type": "application/json"
+      };
+    }
+    /**
+     * Get the default model (Claude 3.5 Sonnet)
+     */
+    getDefaultModel() {
+      var _a;
+      return (_a = this.models.find((m) => m.isDefault)) != null ? _a : this.models[0];
+    }
+    /**
+     * Handle Bedrock-specific error responses
+     */
+    handleError(statusCode, response) {
+      const errorResponse = response;
+      const errorMessage = (errorResponse == null ? void 0 : errorResponse.message) || (errorResponse == null ? void 0 : errorResponse.Message) || (typeof response === "string" ? response : "Unknown error");
+      switch (statusCode) {
+        case 400:
+          return new LLMError(
+            `AWS Bedrock Error (400): ${errorMessage}. Please check your request.`,
+            "INVALID_REQUEST" /* INVALID_REQUEST */,
+            400
+          );
+        case 401:
+        case 403:
+          return new LLMError(
+            `AWS Bedrock Error (${statusCode}): ${errorMessage}. Check IAM permissions and that the model is enabled in your region.`,
+            "INVALID_API_KEY" /* INVALID_API_KEY */,
+            statusCode
+          );
+        case 404:
+          return new LLMError(
+            `AWS Bedrock Error (404): Model not found. Please verify the model ID and that it is enabled in your AWS region.`,
+            "MODEL_NOT_FOUND" /* MODEL_NOT_FOUND */,
+            404
+          );
+        case 429:
+          return new LLMError(
+            "AWS Bedrock Error (429): Rate limit exceeded. Please try again later.",
+            "RATE_LIMIT_EXCEEDED" /* RATE_LIMIT_EXCEEDED */,
+            429
+          );
+        case 500:
+          return new LLMError(
+            "AWS Bedrock Error (500): Server error. Please try again later.",
+            "SERVER_ERROR" /* SERVER_ERROR */,
+            500
+          );
+        case 503:
+          return new LLMError(
+            "AWS Bedrock Error (503): Service unavailable. Please try again later.",
+            "SERVICE_UNAVAILABLE" /* SERVICE_UNAVAILABLE */,
+            503
+          );
+        default:
+          return new LLMError(
+            `AWS Bedrock Error (${statusCode}): ${errorMessage}`,
+            "UNKNOWN_ERROR" /* UNKNOWN_ERROR */,
+            statusCode
+          );
+      }
+    }
+  };
+  var bedrockProvider = new BedrockProvider();
+
   // src/api/providers/index.ts
   var providers = {
     anthropic: anthropicProvider,
     openai: OpenAIProvider,
-    google: googleProvider
+    google: googleProvider,
+    bedrock: bedrockProvider
   };
   function getProvider(providerId) {
     const provider = providers[providerId];
@@ -2004,15 +2448,26 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
     const requestBody = provider.formatRequest(config);
     const headers = provider.getHeaders(apiKey);
     let endpoint = provider.endpoint;
+    let bodyToSend;
     if (providerId === "google") {
       endpoint = `${provider.endpoint}/${config.model}:generateContent?key=${apiKey.trim()}`;
+    }
+    if (providerId === "bedrock") {
+      const creds = parseBedrockCredentials(apiKey);
+      const regionPrefix = creds.region.split("-")[0];
+      const inferenceProfileId = `${regionPrefix}.${config.model}`;
+      const encodedModel = encodeURIComponent(inferenceProfileId);
+      endpoint = `https://bedrock-runtime.${creds.region}.amazonaws.com/model/${encodedModel}/invoke`;
+      bodyToSend = JSON.stringify(requestBody);
+      const sigHeaders = signBedrockRequest(creds, "POST", endpoint, bodyToSend);
+      Object.assign(headers, sigHeaders);
     }
     try {
       console.log(`Making ${provider.name} API call to ${endpoint}...`);
       const response = await fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify(requestBody)
+        body: bodyToSend != null ? bodyToSend : JSON.stringify(requestBody)
       });
       if (!response.ok) {
         let errorData;
@@ -2021,6 +2476,7 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
         } catch (e) {
           errorData = await response.text();
         }
+        console.error(`${provider.name} error ${response.status}:`, JSON.stringify(errorData));
         throw provider.handleError(response.status, errorData);
       }
       const data = await response.json();
@@ -5863,6 +6319,14 @@ ${scoringCriteria}
         return trimmed.startsWith("sk-") && trimmed.length >= 20;
       case "google":
         return trimmed.startsWith("AIza") && trimmed.length >= 35;
+      case "bedrock": {
+        try {
+          const parsed = JSON.parse(trimmed);
+          return typeof parsed.accessKeyId === "string" && parsed.accessKeyId.trim().length > 0 && typeof parsed.secretAccessKey === "string" && parsed.secretAccessKey.trim().length > 0 && typeof parsed.region === "string" && parsed.region.trim().length > 0;
+        } catch (e) {
+          return false;
+        }
+      }
       default:
         return false;
     }
