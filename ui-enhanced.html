@@ -2326,20 +2326,20 @@
               <select id="model-select">
                 <!-- Anthropic (Claude) Models -->
                 <optgroup label="Anthropic (Claude)" id="anthropic-models">
-                  <option value="claude-opus-4-5-20251218">Claude Opus 4.5 (Flagship - Advanced Reasoning)</option>
-                  <option value="claude-sonnet-4-5-20250929" selected>Claude Sonnet 4.5 (Recommended - Best Value)</option>
+                  <option value="claude-opus-4-6">Claude Opus 4.6 (Flagship - Advanced Reasoning)</option>
+                  <option value="claude-sonnet-4-6" selected>Claude Sonnet 4.6 (Recommended - Best Value)</option>
                   <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast - Economy)</option>
                 </optgroup>
                 <!-- OpenAI (GPT) Models -->
                 <optgroup label="OpenAI (GPT)" id="openai-models" style="display: none;">
-                  <option value="gpt-5.2" disabled>GPT-5.2 (Flagship)</option>
-                  <option value="gpt-5.2-pro" disabled>GPT-5.2 Pro (Extended Reasoning)</option>
-                  <option value="gpt-5-mini" disabled>GPT-5 Mini (Fast - Economy)</option>
+                  <option value="gpt-5.4" disabled>GPT-5.4 (Flagship)</option>
+                  <option value="gpt-5.4-mini" disabled>GPT-5.4 Mini (Standard)</option>
+                  <option value="gpt-5.4-nano" disabled>GPT-5.4 Nano (Fast - Economy)</option>
                 </optgroup>
                 <!-- Google (Gemini) Models -->
                 <optgroup label="Google (Gemini)" id="google-models" style="display: none;">
-                  <option value="gemini-3-pro-preview" disabled>Gemini 3 Pro (Flagship - Multimodal)</option>
-                  <option value="gemini-2.5-pro" disabled>Gemini 2.5 Pro (Recommended)</option>
+                  <option value="gemini-3.1-pro-preview" disabled>Gemini 3.1 Pro (Flagship - Reasoning)</option>
+                  <option value="gemini-3-flash-preview" disabled>Gemini 3 Flash (Standard)</option>
                   <option value="gemini-2.5-flash" disabled>Gemini 2.5 Flash (Fast - Economy)</option>
                 </optgroup>
               </select>
@@ -2475,6 +2475,13 @@
               <div class="collapsible-title">
                 <span class="collapsible-icon">▶</span>
                 <span>Component Metadata</span>
+                <div class="tooltip">
+                  <div class="info-icon">i</div>
+                  <span class="tooltiptext">
+                    <strong>Component Metadata</strong><br>
+                    Raw details extracted from the component including description, variants, properties, states, and structure. Useful for verifying what FigmaLint detected and understanding how AI tools will interpret your component.
+                  </span>
+                </div>
               </div>
             </div>
             <div class="collapsible-content" id="metadata-content">
@@ -3535,6 +3542,17 @@
         content += `\n`;
       }
 
+      // --- Detached Instances ---
+      if (audit.detachedInstances && audit.detachedInstances.length > 0) {
+        content += `## Detached Instances (${audit.detachedInstances.length} found)\n\n`;
+        content += `| Name | Location | Details |\n`;
+        content += `|------|----------|---------|\n`;
+        audit.detachedInstances.forEach(item => {
+          content += `| ${item.name} | ${item.parentPath} | ${item.reason} |\n`;
+        });
+        content += `\n`;
+      }
+
       // --- Layer Naming ---
       if (namingIssues.length > 0) {
         content += `## Layer Naming Issues\n\n`;
@@ -3725,6 +3743,17 @@
         }
       }
       prompt += `\n`;
+
+      // --- Detached Instance Warnings ---
+      const detachedItems2 = audit.detachedInstances || [];
+      if (detachedItems2.length > 0) {
+        prompt += `\n## Detached Instances Detected (${detachedItems2.length})\n\n`;
+        prompt += `The following frames appear to be detached from their source component. They will NOT stay in sync with design system updates. Consider re-attaching or replacing with proper component instances before implementing:\n\n`;
+        detachedItems2.forEach(item => {
+          prompt += `- **${item.name}** (in ${item.parentPath}) — ${item.reason}\n`;
+        });
+        prompt += `\n`;
+      }
 
       // --- Layer Structure Naming ---
       if (namingIssues.length > 0) {
@@ -4676,6 +4705,43 @@
               }</span>
               <span class="audit-label">${item.check}</span>
               ${item.suggestion ? `<div class="tooltip" style="margin-left: 4px;"><div class="info-icon" style="font-size: 9px; width: 14px; height: 14px;">i</div><span class="tooltiptext">${item.suggestion}</span></div>` : ''}
+            </div>
+          `;
+        });
+        html += '</div>';
+      }
+
+      // Detached Instances — Informational (not scored)
+      // Only shown when detached copies are found; does not affect the audit score.
+      const detachedItems = audit.detachedInstances || [];
+      if (detachedItems.length > 0) {
+        html += '<div class="audit-section">';
+        html += `
+          <div class="section-header">
+            <h4 class="section-title">Detached Instances</h4>
+            <span style="font-size: 11px; color: var(--text-secondary); margin-left: 4px;">(${detachedItems.length})</span>
+            <div class="tooltip">
+              <div class="info-icon">i</div>
+              <span class="tooltiptext">
+                <strong>Detached Instances (Informational)</strong><br>
+                Frames on this page that appear to be detached copies of this component. They won't receive component updates and may cause inconsistencies during AI code generation. Click any item to navigate to it in Figma.
+              </span>
+            </div>
+          </div>
+        `;
+
+        detachedItems.forEach(item => {
+          html += `
+            <div class="audit-item" style="cursor: pointer; flex-direction: column; align-items: flex-start; gap: 2px;" onclick="selectFigmaNode('${item.nodeId}')" title="Click to select in Figma">
+              <div style="display: flex; align-items: center; gap: 6px; width: 100%;">
+                <span class="audit-status warning">${ICO.info}</span>
+                <span class="audit-label" style="font-weight: 500;">${item.name}</span>
+                <div class="tooltip" style="margin-left: auto;">
+                  <div class="info-icon" style="font-size: 9px; width: 14px; height: 14px;">i</div>
+                  <span class="tooltiptext">${item.reason}</span>
+                </div>
+              </div>
+              <span style="font-size: 10px; color: var(--text-secondary); padding-left: 24px;">${item.parentPath}</span>
             </div>
           `;
         });

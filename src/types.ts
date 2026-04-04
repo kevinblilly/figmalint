@@ -236,12 +236,25 @@ export interface AuditCheck {
   suggestion: string;
 }
 
+export interface DetachedInstanceInfo {
+  /** Display name of the detached frame */
+  name: string;
+  /** Figma node ID — used for click-to-select navigation */
+  nodeId: string;
+  /** Human-readable parent path (e.g. "Page > Section > Frame") for disambiguation */
+  parentPath: string;
+  /** Explanation of why this was flagged */
+  reason: string;
+}
+
 export interface DetailedAuditResults {
   states: Array<{ name: string; found: boolean }>;
   /** Property configuration and description checks (formerly "Accessibility") */
   componentReadiness: AuditCheck[];
   /** Real WCAG-informed accessibility checks (contrast, touch targets, focus state, font size) */
   accessibility: AuditCheck[];
+  /** Detached instance detection — informational, not scored */
+  detachedInstances?: DetachedInstanceInfo[];
 }
 
 export interface EnhancedAnalysisResult {

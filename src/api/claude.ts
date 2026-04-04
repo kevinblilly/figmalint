@@ -5,7 +5,7 @@ import { extractInstanceNames } from '../core/component-analyzer';
 
 // Claude API Configuration
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929'; // Claude Sonnet 4.5 (Latest)
+const DEFAULT_MODEL = 'claude-sonnet-4-6'; // Claude Sonnet 4.6 (Latest)
 const MAX_TOKENS = 2048;
 
 // Deterministic settings for consistency

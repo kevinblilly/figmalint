@@ -1219,31 +1219,31 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
     }
   };
   var DEFAULT_MODELS = {
-    anthropic: "claude-sonnet-4-5-20250929",
-    openai: "gpt-5.2",
-    google: "gemini-2.5-pro"
+    anthropic: "claude-sonnet-4-6",
+    openai: "gpt-5.4",
+    google: "gemini-3.1-pro-preview"
   };
 
   // src/api/providers/anthropic.ts
   var ANTHROPIC_MODELS = [
     {
-      id: "claude-opus-4-5-20251218",
-      name: "Claude Opus 4.5",
-      description: "Flagship model - Most capable, best for complex analysis and reasoning",
-      contextWindow: 2e5,
+      id: "claude-opus-4-6",
+      name: "Claude Opus 4.6",
+      description: "Flagship model - Most intelligent, best for complex agents and coding",
+      contextWindow: 1e6,
       isDefault: false
     },
     {
-      id: "claude-sonnet-4-5-20250929",
-      name: "Claude Sonnet 4.5",
-      description: "Standard model - Balanced performance and cost, recommended for most tasks",
-      contextWindow: 2e5,
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      description: "Standard model - Best combination of speed and intelligence, recommended for most tasks",
+      contextWindow: 1e6,
       isDefault: true
     },
     {
       id: "claude-haiku-4-5-20251001",
       name: "Claude Haiku 4.5",
-      description: "Economy model - Fastest responses, ideal for quick analysis",
+      description: "Economy model - Fastest with near-frontier intelligence",
       contextWindow: 2e5,
       isDefault: false
     }
@@ -1424,24 +1424,24 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
   // src/api/providers/openai.ts
   var OPENAI_MODELS = [
     {
-      id: "gpt-5.2",
-      name: "GPT-5.2",
-      description: "Flagship model with advanced reasoning capabilities",
-      contextWindow: 128e3,
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      description: "Flagship model - Best intelligence for agentic, coding, and professional workflows",
+      contextWindow: 1e6,
       isDefault: true
     },
     {
-      id: "gpt-5.2-pro",
-      name: "GPT-5.2 Pro",
-      description: "Premium model with extended reasoning for complex tasks",
-      contextWindow: 128e3,
+      id: "gpt-5.4-mini",
+      name: "GPT-5.4 Mini",
+      description: "Standard model - Strong coding and reasoning at lower cost",
+      contextWindow: 4e5,
       isDefault: false
     },
     {
-      id: "gpt-5-mini",
-      name: "GPT-5 Mini",
-      description: "Economy model - fast and cost-effective",
-      contextWindow: 128e3,
+      id: "gpt-5.4-nano",
+      name: "GPT-5.4 Nano",
+      description: "Economy model - Fastest and cheapest for high-volume tasks",
+      contextWindow: 4e5,
       isDefault: false
     }
   ];
@@ -1643,23 +1643,23 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
   // src/api/providers/google.ts
   var GOOGLE_MODELS = [
     {
-      id: "gemini-3-pro-preview",
-      name: "Gemini 3 Pro",
-      description: "Flagship model with advanced reasoning and multimodal capabilities",
+      id: "gemini-3.1-pro-preview",
+      name: "Gemini 3.1 Pro",
+      description: "Flagship model - Advanced reasoning and agentic capabilities",
       contextWindow: 1e6,
       isDefault: true
     },
     {
-      id: "gemini-2.5-pro",
-      name: "Gemini 2.5 Pro",
-      description: "Standard reasoning model with excellent performance",
+      id: "gemini-3-flash-preview",
+      name: "Gemini 3 Flash",
+      description: "Standard model - Frontier-class performance at lower cost",
       contextWindow: 1e6,
       isDefault: false
     },
     {
       id: "gemini-2.5-flash",
       name: "Gemini 2.5 Flash",
-      description: "Economy model optimized for speed and efficiency",
+      description: "Economy model - Best price-performance for high-volume tasks",
       contextWindow: 1e6,
       isDefault: false
     }
@@ -4150,13 +4150,15 @@ Focus ONLY on what's actually in the Figma component for existing data. Recommen
       }
     ];
     const accessibility = runAccessibilityChecks(node, actualStates);
+    const detachedInstances = detectDetachedInstances(node);
     return {
       states: actualStates.map((state) => ({
         name: state,
         found: true
       })),
       componentReadiness,
-      accessibility
+      accessibility,
+      detachedInstances
     };
   }
   var INTERACTIVE_KEYWORDS = [
@@ -4644,6 +4646,88 @@ Focus ONLY on what's actually in the Figma component for existing data. Recommen
       }
     }
     return matrix[str2.length][str1.length];
+  }
+  function detectDetachedInstances(node) {
+    if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") {
+      return [];
+    }
+    const page = figma.currentPage;
+    const targetNames = /* @__PURE__ */ new Set();
+    const componentId = node.id;
+    targetNames.add(node.name);
+    if (node.type === "COMPONENT_SET") {
+      const componentSet = node;
+      for (const child of componentSet.children) {
+        if (child.type === "COMPONENT") {
+          targetNames.add(child.name);
+        }
+      }
+    }
+    const componentBaseName = node.name.split("/")[0].trim().toLowerCase();
+    const allFrames = page.findAll((n) => n.type === "FRAME");
+    const results = [];
+    for (const frame of allFrames) {
+      if (frame.id === componentId) continue;
+      if (isDescendantOf(frame, componentId)) continue;
+      if (isInsideComponent(frame)) continue;
+      if (frame.parent && frame.parent.type === "PAGE") continue;
+      const frameName = frame.name;
+      if (targetNames.has(frameName)) {
+        results.push({
+          name: frameName,
+          nodeId: frame.id,
+          parentPath: buildParentPath(frame),
+          reason: `This frame matches component "${node.name}" but is not a component instance. It was likely detached and won't receive component updates. Consider replacing it with a proper instance.`
+        });
+        continue;
+      }
+      if (frameName.includes("/")) {
+        const frameBaseName = frameName.split("/")[0].trim().toLowerCase();
+        if (frameBaseName === componentBaseName && frameBaseName.length >= 2) {
+          results.push({
+            name: frameName,
+            nodeId: frame.id,
+            parentPath: buildParentPath(frame),
+            reason: `This frame uses variant-style naming matching "${node.name}" but is a plain frame, not a component instance. It was likely detached and won't receive updates.`
+          });
+        }
+      }
+    }
+    return results;
+  }
+  function buildParentPath(node) {
+    const parts = [];
+    let current = node.parent;
+    let depth = 0;
+    const maxDepth = 3;
+    while (current && depth < maxDepth) {
+      if ("name" in current && current.name) {
+        if (current.type === "PAGE") break;
+        parts.unshift(current.name);
+      }
+      current = current.parent;
+      depth++;
+    }
+    return parts.length > 0 ? parts.join(" > ") : "Page root";
+  }
+  function isDescendantOf(node, ancestorId) {
+    let current = node.parent;
+    while (current) {
+      if (current.id === ancestorId) return true;
+      current = current.parent;
+    }
+    return false;
+  }
+  function isInsideComponent(node) {
+    let current = node.parent;
+    while (current) {
+      if ("type" in current) {
+        const t = current.type;
+        if (t === "COMPONENT" || t === "COMPONENT_SET") return true;
+      }
+      current = current.parent;
+    }
+    return false;
   }
 
   // src/core/consistency-engine.ts

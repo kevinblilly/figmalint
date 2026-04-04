@@ -1,6 +1,6 @@
 /// <reference types="@figma/plugin-typings" />
 
-import { ComponentContext, LayerHierarchy, ComponentMetadata, EnhancedAnalysisResult, DetailedAuditResults, AuditCheck, TokenAnalysis, DesignToken, EnhancedAnalysisOptions } from '../types';
+import { ComponentContext, LayerHierarchy, ComponentMetadata, EnhancedAnalysisResult, DetailedAuditResults, AuditCheck, DetachedInstanceInfo, TokenAnalysis, DesignToken, EnhancedAnalysisOptions } from '../types';
 import { extractTextContent, getAllChildNodes } from '../utils/figma-helpers';
 import { extractDesignTokensFromNode } from './token-analyzer';
 import { extractJSONFromResponse, createEnhancedMetadataPrompt, filterDevelopmentRecommendations, createMCPEnhancedAnalysis } from '../api/claude';
@@ -2011,13 +2011,17 @@ async function createAuditResults(
   // Real accessibility checks
   const accessibility = runAccessibilityChecks(node, actualStates);
 
+  // Detached instance detection
+  const detachedInstances = detectDetachedInstances(node);
+
   return {
     states: actualStates.map(state => ({
       name: state,
       found: true
     })),
     componentReadiness,
-    accessibility
+    accessibility,
+    detachedInstances
   };
 }
 
@@ -2721,4 +2725,148 @@ function levenshteinDistance(str1: string, str2: string): number {
   }
 
   return matrix[str2.length][str1.length];
+}
+
+// ============================================================================
+// Detached Instance Detection
+// ============================================================================
+
+/**
+ * Scan the current page for FRAME nodes that appear to be detached copies
+ * of a specific component being analyzed.
+ *
+ * Only runs for COMPONENT or COMPONENT_SET nodes. Scans the page — not the
+ * component's own children — for frames whose name matches the component
+ * (or its variant names). Skips frames that live inside other components.
+ *
+ * Returns DetachedInstanceInfo[] with node IDs (for click-to-navigate) and
+ * parent paths (for disambiguation when multiple detached copies share a name).
+ *
+ * This is an informational check (not scored) that helps designers identify
+ * orphaned copies before AI code-generation handoff.
+ */
+export function detectDetachedInstances(node: SceneNode): DetachedInstanceInfo[] {
+  // Only run for components — never for plain FRAMEs or other node types
+  if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') {
+    return [];
+  }
+
+  const page = figma.currentPage;
+
+  // Build the set of names to match against:
+  //  - The component/component-set name itself
+  //  - If it's a component set, also collect child variant names (e.g. "Button/Primary")
+  const targetNames = new Set<string>();
+  const componentId = node.id;
+  targetNames.add(node.name);
+
+  if (node.type === 'COMPONENT_SET') {
+    const componentSet = node as ComponentSetNode;
+    for (const child of componentSet.children) {
+      if (child.type === 'COMPONENT') {
+        targetNames.add(child.name);
+      }
+    }
+  }
+
+  // Also match frames with variant-style naming where the base name matches
+  // e.g. "Button/Large/Disabled" when analyzing a component named "Button"
+  const componentBaseName = node.name.split('/')[0].trim().toLowerCase();
+
+  // Scan the page for FRAME nodes (detached instances become FRAMEs)
+  const allFrames = page.findAll(n => n.type === 'FRAME') as FrameNode[];
+
+  const results: DetachedInstanceInfo[] = [];
+
+  for (const frame of allFrames) {
+    // Skip the component itself and anything inside it
+    if (frame.id === componentId) continue;
+    if (isDescendantOf(frame, componentId)) continue;
+
+    // Skip frames that are inside any component (they're part of another component's design)
+    if (isInsideComponent(frame)) continue;
+
+    // Skip top-level frames (direct children of the page). These are artboards/canvases
+    // used for organization (e.g. documentation pages, showcases). Detached instances
+    // are always nested inside other frames where the component was being used.
+    if (frame.parent && frame.parent.type === 'PAGE') continue;
+
+    const frameName = frame.name;
+
+    // Layer 1: Exact name match against this component or its variants
+    if (targetNames.has(frameName)) {
+      results.push({
+        name: frameName,
+        nodeId: frame.id,
+        parentPath: buildParentPath(frame),
+        reason: `This frame matches component "${node.name}" but is not a component instance. It was likely detached and won't receive component updates. Consider replacing it with a proper instance.`
+      });
+      continue;
+    }
+
+    // Layer 2: Variant-style naming where the base name matches this component
+    if (frameName.includes('/')) {
+      const frameBaseName = frameName.split('/')[0].trim().toLowerCase();
+      if (frameBaseName === componentBaseName && frameBaseName.length >= 2) {
+        results.push({
+          name: frameName,
+          nodeId: frame.id,
+          parentPath: buildParentPath(frame),
+          reason: `This frame uses variant-style naming matching "${node.name}" but is a plain frame, not a component instance. It was likely detached and won't receive updates.`
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Build a human-readable parent path for a node (e.g. "Section > Frame > Group").
+ * Shows up to 3 ancestor levels for context without being overwhelming.
+ */
+function buildParentPath(node: BaseNode): string {
+  const parts: string[] = [];
+  let current: BaseNode | null = node.parent;
+  let depth = 0;
+  const maxDepth = 3;
+
+  while (current && depth < maxDepth) {
+    if ('name' in current && current.name) {
+      // Skip the page itself — it's implied
+      if (current.type === 'PAGE') break;
+      parts.unshift(current.name as string);
+    }
+    current = current.parent;
+    depth++;
+  }
+
+  return parts.length > 0 ? parts.join(' > ') : 'Page root';
+}
+
+/**
+ * Check if a node is a descendant of a specific node by ID.
+ */
+function isDescendantOf(node: BaseNode, ancestorId: string): boolean {
+  let current: BaseNode | null = node.parent;
+  while (current) {
+    if (current.id === ancestorId) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+/**
+ * Check if a node is nested inside a COMPONENT or COMPONENT_SET ancestor.
+ */
+function isInsideComponent(node: BaseNode): boolean {
+  let current: BaseNode | null = node.parent;
+  while (current) {
+    if ('type' in current) {
+      const t = (current as SceneNode).type;
+      if (t === 'COMPONENT' || t === 'COMPONENT_SET') return true;
+    }
+    current = current.parent;
+  }
+  return false;
 }

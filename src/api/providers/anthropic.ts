@@ -2,7 +2,7 @@
  * Anthropic (Claude) Provider Implementation
  *
  * Implements the LLMProvider interface for Anthropic's Claude API.
- * Supports Claude Opus 4.5, Sonnet 4.5, and Haiku 4.5 models.
+ * Supports Claude Opus 4.6, Sonnet 4.6, and Haiku 4.5 models.
  */
 
 import {
@@ -21,23 +21,23 @@ import {
  */
 export const ANTHROPIC_MODELS: LLMModel[] = [
   {
-    id: 'claude-opus-4-5-20251218',
-    name: 'Claude Opus 4.5',
-    description: 'Flagship model - Most capable, best for complex analysis and reasoning',
-    contextWindow: 200000,
+    id: 'claude-opus-4-6',
+    name: 'Claude Opus 4.6',
+    description: 'Flagship model - Most intelligent, best for complex agents and coding',
+    contextWindow: 1000000,
     isDefault: false,
   },
   {
-    id: 'claude-sonnet-4-5-20250929',
-    name: 'Claude Sonnet 4.5',
-    description: 'Standard model - Balanced performance and cost, recommended for most tasks',
-    contextWindow: 200000,
+    id: 'claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6',
+    description: 'Standard model - Best combination of speed and intelligence, recommended for most tasks',
+    contextWindow: 1000000,
     isDefault: true,
   },
   {
     id: 'claude-haiku-4-5-20251001',
     name: 'Claude Haiku 4.5',
-    description: 'Economy model - Fastest responses, ideal for quick analysis',
+    description: 'Economy model - Fastest with near-frontier intelligence',
     contextWindow: 200000,
     isDefault: false,
   },
