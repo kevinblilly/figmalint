@@ -5145,7 +5145,7 @@
               if (token.context?.hasMatchingToken === false) {
                 fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
               } else {
-                fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property || 'fills[0]'}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+                fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" data-property="${token.context.property || 'fills[0]'}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property || 'fills[0]'}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
               }
             }
 
@@ -5300,7 +5300,7 @@
                 if (token.context?.hasMatchingToken === false) {
                   fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
                 } else {
-                  fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+                  fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" data-property="${token.context.property}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
                 }
               }
 
@@ -5350,7 +5350,7 @@
                 if (token.context?.hasMatchingToken === false) {
                   fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
                 } else {
-                  fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+                  fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" data-property="${token.context.property}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
                 }
               }
 
@@ -5430,7 +5430,7 @@
               if (token.context?.hasMatchingToken === false) {
                 fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
               } else {
-                fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+                fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" data-property="${token.context.property}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
               }
             }
 
@@ -6345,9 +6345,9 @@
       decrementQuickActionsCount(successCount);
 
       // Mark successfully fixed items in the UI, separated by fix type
+      let namingSuccessCount = 0;
+      let tokenSuccessCount = 0;
       if (data.results && data.results.length > 0) {
-        let namingSuccessCount = 0;
-        let tokenSuccessCount = 0;
         data.results.forEach(result => {
           if (result.success && result.nodeId) {
             if (result.fixType === 'naming') {
@@ -6378,8 +6378,19 @@
                 namingSuccessCount++;
               }
             } else if (result.fixType === 'token') {
-              // Update token fix buttons only
-              const tokenBtns = document.querySelectorAll(`.fix-btn[data-node-id="${result.nodeId}"]`);
+              // Update only the specific token fix button matching both nodeId and property
+              // Try exact match first, then base property without index (fills[0] → fills)
+              let selector = `.fix-btn[data-node-id="${result.nodeId}"]`;
+              if (result.propertyPath) {
+                selector += `[data-property="${result.propertyPath}"]`;
+              }
+              let tokenBtns = document.querySelectorAll(selector);
+              if (tokenBtns.length === 0 && result.propertyPath) {
+                const baseProperty = result.propertyPath.replace(/\[\d+\]$/, '');
+                if (baseProperty !== result.propertyPath) {
+                  tokenBtns = document.querySelectorAll(`.fix-btn[data-node-id="${result.nodeId}"][data-property="${baseProperty}"]`);
+                }
+              }
               tokenBtns.forEach(btn => {
                 btn.textContent = '\u2713';
                 btn.classList.add('fix-applied');

@@ -977,12 +977,14 @@ async function handlePreviewFix(data: FixPreviewRequest): Promise<void> {
 
       // Find matching variable for the property
       // For preview, we need to find a matching token first
-      const matches = data.propertyPath.match(/^(fills|strokes)\[(\d+)\]$/);
+      const matches = data.propertyPath.match(/^(fills|strokes)(\[(\d+)\])?$/);
       if (matches) {
         // Color property - find matching color variable
+        // Normalize property path to include index (default to [0])
+        const normalizedPath = matches[2] ? data.propertyPath : `${matches[1]}[0]`;
         const colorMatches = await findMatchingColorVariable(data.suggestedValue || '', 0.1);
         if (colorMatches.length > 0) {
-          preview = await previewTokenFix(sceneNode, data.propertyPath, colorMatches[0].variableId);
+          preview = await previewTokenFix(sceneNode, normalizedPath, colorMatches[0].variableId);
         }
       } else {
         // Spacing property - find matching variable with property-aware ranking
@@ -1070,11 +1072,14 @@ async function handleApplyTokenFix(data: FixRequest): Promise<void> {
     let result: FixResult;
 
     // Determine if this is a color or spacing fix based on property path
-    const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(data.propertyPath);
+    const isColorProperty = /^(fills|strokes)(\[\d+\])?$/.test(data.propertyPath);
+    // Normalize property path to include index (default to [0])
+    const normalizedPath = isColorProperty && !/\[\d+\]$/.test(data.propertyPath)
+      ? `${data.propertyPath}[0]` : data.propertyPath;
 
     if (isColorProperty) {
       // Apply color fix
-      result = await applyColorFix(sceneNode, data.propertyPath, data.tokenId);
+      result = await applyColorFix(sceneNode, normalizedPath, data.tokenId);
     } else {
       // Apply spacing fix
       result = await applySpacingFix(sceneNode, data.propertyPath, data.tokenId);
@@ -1175,6 +1180,7 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
       message: string;
       error?: string;
       fixType?: string;
+      propertyPath?: string;
       newName?: string;
     }> = [];
 
@@ -1214,7 +1220,11 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
           }
 
           let tokenId = fix.tokenId;
-          const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(fix.propertyPath);
+          const isColorProperty = /^(fills|strokes)(\[\d+\])?$/.test(fix.propertyPath);
+          // Normalize property path to include index (default to [0]) for color fixes
+          if (isColorProperty && !/\[\d+\]$/.test(fix.propertyPath)) {
+            fix.propertyPath = `${fix.propertyPath}[0]`;
+          }
 
           // If no tokenId provided, try to find a matching variable
           if (!tokenId && fix.newValue) {
@@ -1263,7 +1273,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
             success: result.success,
             message: result.message,
             error: result.error,
-            fixType: 'token'
+            fixType: 'token',
+            propertyPath: fix.propertyPath
           });
 
           if (result.success) {

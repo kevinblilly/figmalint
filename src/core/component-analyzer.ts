@@ -1859,7 +1859,7 @@ export async function processAnalysisResult(
           if (token.source !== 'hard-coded' || !token.context?.nodeId || !token.context?.property) continue;
 
           try {
-            const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(token.context.property);
+            const isColorProperty = /^(fills|strokes)(\[\d+\])?$/.test(token.context.property);
             if (isColorProperty) {
               const matches = await findMatchingColorVariable(token.value || '', 0.1);
               token.context.hasMatchingToken = matches.length > 0;

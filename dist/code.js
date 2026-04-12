@@ -2837,6 +2837,7 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
         const varColor = resolved;
         const matchScore = calculateColorMatchScore(targetRgb, varColor);
         if (matchScore >= 1 - tolerance) {
+          const aliasDepth = await countAliasDepth(value);
           seenVariableIds.add(variable.id);
           suggestions.push({
             variableId: variable.id,
@@ -2844,7 +2845,8 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
             collectionName: collection.name,
             value: rgbToHex(varColor.r, varColor.g, varColor.b),
             matchScore,
-            type: "color"
+            type: "color",
+            aliasDepth
           });
         }
       }
@@ -2862,6 +2864,7 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
           const varColor = resolved;
           const matchScore = calculateColorMatchScore(targetRgb, varColor);
           if (matchScore >= 1 - tolerance) {
+            const aliasDepth = await countAliasDepth(value);
             seenVariableIds.add(variable.id);
             suggestions.push({
               variableId: variable.id,
@@ -2869,14 +2872,19 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
               collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
               value: rgbToHex(varColor.r, varColor.g, varColor.b),
               matchScore,
-              type: "color"
+              type: "color",
+              aliasDepth
             });
           }
         }
       } catch (libError) {
         console.warn("Library variable search failed for colors:", libError);
       }
-      return suggestions.sort((a, b) => b.matchScore - a.matchScore);
+      return suggestions.sort((a, b) => {
+        const depthDiff = (b.aliasDepth || 0) - (a.aliasDepth || 0);
+        if (depthDiff !== 0) return depthDiff;
+        return b.matchScore - a.matchScore;
+      });
     } catch (error) {
       console.error("Error finding matching color variable:", error);
       return [];
@@ -2903,6 +2911,7 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
         const difference = Math.abs(value - pixelValue);
         if (difference <= tolerance) {
           const matchScore = difference === 0 ? 1 : 1 - difference / (tolerance || 1);
+          const aliasDepth = await countAliasDepth(rawValue);
           seenVariableIds.add(variable.id);
           suggestions.push({
             variableId: variable.id,
@@ -2910,7 +2919,8 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
             collectionName: collection.name,
             value: `${value}px`,
             matchScore,
-            type: "number"
+            type: "number",
+            aliasDepth
           });
         }
       }
@@ -2928,6 +2938,7 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
           const difference = Math.abs(value - pixelValue);
           if (difference <= tolerance) {
             const matchScore = difference === 0 ? 1 : 1 - difference / (tolerance || 1);
+            const aliasDepth = await countAliasDepth(rawValue);
             seenVariableIds.add(variable.id);
             suggestions.push({
               variableId: variable.id,
@@ -2935,14 +2946,19 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
               collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
               value: `${value}px`,
               matchScore,
-              type: "number"
+              type: "number",
+              aliasDepth
             });
           }
         }
       } catch (libError) {
         console.warn("Library variable search failed for spacing:", libError);
       }
-      return suggestions.sort((a, b) => b.matchScore - a.matchScore);
+      return suggestions.sort((a, b) => {
+        const depthDiff = (b.aliasDepth || 0) - (a.aliasDepth || 0);
+        if (depthDiff !== 0) return depthDiff;
+        return b.matchScore - a.matchScore;
+      });
     } catch (error) {
       console.error("Error finding matching spacing variable:", error);
       return [];
@@ -3133,6 +3149,26 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
       }
     }
     return null;
+  }
+  async function countAliasDepth(value, maxDepth = 5) {
+    if (maxDepth <= 0) return 0;
+    if (typeof value === "object" && value !== null && "type" in value && value.type === "VARIABLE_ALIAS") {
+      const alias = value;
+      try {
+        const referencedVar = await figma.variables.getVariableByIdAsync(alias.id);
+        if (!referencedVar) return 1;
+        const collection = await figma.variables.getVariableCollectionByIdAsync(
+          referencedVar.variableCollectionId
+        );
+        if (!collection) return 1;
+        const modeId = collection.modes[0].modeId;
+        const nestedValue = referencedVar.valuesByMode[modeId];
+        return 1 + await countAliasDepth(nestedValue, maxDepth - 1);
+      } catch (e) {
+        return 1;
+      }
+    }
+    return 0;
   }
   function hexToRgb(hex) {
     const cleanHex = hex.replace(/^#/, "");
@@ -4557,7 +4593,7 @@ Focus ONLY on what's actually in the Figma component for existing data. Recommen
           for (const token of tokens[category]) {
             if (token.source !== "hard-coded" || !((_a = token.context) == null ? void 0 : _a.nodeId) || !((_b = token.context) == null ? void 0 : _b.property)) continue;
             try {
-              const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(token.context.property);
+              const isColorProperty = /^(fills|strokes)(\[\d+\])?$/.test(token.context.property);
               if (isColorProperty) {
                 const matches = await findMatchingColorVariable(token.value || "", 0.1);
                 token.context.hasMatchingToken = matches.length > 0;
@@ -6487,11 +6523,12 @@ Respond naturally and helpfully to the user's question.`;
           });
           return;
         }
-        const matches = data.propertyPath.match(/^(fills|strokes)\[(\d+)\]$/);
+        const matches = data.propertyPath.match(/^(fills|strokes)(\[(\d+)\])?$/);
         if (matches) {
+          const normalizedPath = matches[2] ? data.propertyPath : `${matches[1]}[0]`;
           const colorMatches = await findMatchingColorVariable(data.suggestedValue || "", 0.1);
           if (colorMatches.length > 0) {
-            preview = await previewFix(sceneNode, data.propertyPath, colorMatches[0].variableId);
+            preview = await previewFix(sceneNode, normalizedPath, colorMatches[0].variableId);
           }
         } else {
           const pixelValue = parseFloat(data.suggestedValue || "0");
@@ -6564,9 +6601,10 @@ Respond naturally and helpfully to the user's question.`;
         return;
       }
       let result;
-      const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(data.propertyPath);
+      const isColorProperty = /^(fills|strokes)(\[\d+\])?$/.test(data.propertyPath);
+      const normalizedPath = isColorProperty && !/\[\d+\]$/.test(data.propertyPath) ? `${data.propertyPath}[0]` : data.propertyPath;
       if (isColorProperty) {
-        result = await applyColorFix(sceneNode, data.propertyPath, data.tokenId);
+        result = await applyColorFix(sceneNode, normalizedPath, data.tokenId);
       } else {
         result = await applySpacingFix(sceneNode, data.propertyPath, data.tokenId);
       }
@@ -6668,7 +6706,10 @@ Respond naturally and helpfully to the user's question.`;
               continue;
             }
             let tokenId = fix.tokenId;
-            const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(fix.propertyPath);
+            const isColorProperty = /^(fills|strokes)(\[\d+\])?$/.test(fix.propertyPath);
+            if (isColorProperty && !/\[\d+\]$/.test(fix.propertyPath)) {
+              fix.propertyPath = `${fix.propertyPath}[0]`;
+            }
             if (!tokenId && fix.newValue) {
               try {
                 if (isColorProperty) {
@@ -6711,7 +6752,8 @@ Respond naturally and helpfully to the user's question.`;
               success: result.success,
               message: result.message,
               error: result.error,
-              fixType: "token"
+              fixType: "token",
+              propertyPath: fix.propertyPath
             });
             if (result.success) {
               successCount++;

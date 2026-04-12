@@ -56,6 +56,8 @@ export interface TokenSuggestion {
   matchScore: number;
   /** Type of token */
   type: 'color' | 'number';
+  /** How many alias levels deep this variable is (higher = more semantic) */
+  aliasDepth?: number;
 }
 
 /**
@@ -585,6 +587,7 @@ export async function findMatchingColorVariable(
       const matchScore = calculateColorMatchScore(targetRgb, varColor);
 
       if (matchScore >= 1 - tolerance) {
+        const aliasDepth = await countAliasDepth(value);
         seenVariableIds.add(variable.id);
         suggestions.push({
           variableId: variable.id,
@@ -592,7 +595,8 @@ export async function findMatchingColorVariable(
           collectionName: collection.name,
           value: rgbToHex(varColor.r, varColor.g, varColor.b),
           matchScore,
-          type: 'color'
+          type: 'color',
+          aliasDepth
         });
       }
     }
@@ -622,6 +626,7 @@ export async function findMatchingColorVariable(
         const matchScore = calculateColorMatchScore(targetRgb, varColor);
 
         if (matchScore >= 1 - tolerance) {
+          const aliasDepth = await countAliasDepth(value);
           seenVariableIds.add(variable.id);
           suggestions.push({
             variableId: variable.id,
@@ -629,7 +634,8 @@ export async function findMatchingColorVariable(
             collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
             value: rgbToHex(varColor.r, varColor.g, varColor.b),
             matchScore,
-            type: 'color'
+            type: 'color',
+            aliasDepth
           });
         }
       }
@@ -638,8 +644,12 @@ export async function findMatchingColorVariable(
       console.warn('Library variable search failed for colors:', libError);
     }
 
-    // Sort by match score (highest first)
-    return suggestions.sort((a, b) => b.matchScore - a.matchScore);
+    // Sort by alias depth (most semantic first), then by match score
+    return suggestions.sort((a, b) => {
+      const depthDiff = (b.aliasDepth || 0) - (a.aliasDepth || 0);
+      if (depthDiff !== 0) return depthDiff;
+      return b.matchScore - a.matchScore;
+    });
   } catch (error) {
     console.error('Error finding matching color variable:', error);
     return [];
@@ -687,6 +697,7 @@ export async function findMatchingSpacingVariable(
 
       if (difference <= tolerance) {
         const matchScore = difference === 0 ? 1 : 1 - (difference / (tolerance || 1));
+        const aliasDepth = await countAliasDepth(rawValue);
         seenVariableIds.add(variable.id);
         suggestions.push({
           variableId: variable.id,
@@ -694,7 +705,8 @@ export async function findMatchingSpacingVariable(
           collectionName: collection.name,
           value: `${value}px`,
           matchScore,
-          type: 'number'
+          type: 'number',
+          aliasDepth
         });
       }
     }
@@ -721,6 +733,7 @@ export async function findMatchingSpacingVariable(
 
         if (difference <= tolerance) {
           const matchScore = difference === 0 ? 1 : 1 - (difference / (tolerance || 1));
+          const aliasDepth = await countAliasDepth(rawValue);
           seenVariableIds.add(variable.id);
           suggestions.push({
             variableId: variable.id,
@@ -728,7 +741,8 @@ export async function findMatchingSpacingVariable(
             collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
             value: `${value}px`,
             matchScore,
-            type: 'number'
+            type: 'number',
+            aliasDepth
           });
         }
       }
@@ -736,8 +750,12 @@ export async function findMatchingSpacingVariable(
       console.warn('Library variable search failed for spacing:', libError);
     }
 
-    // Sort by match score (highest first)
-    return suggestions.sort((a, b) => b.matchScore - a.matchScore);
+    // Sort by alias depth (most semantic first), then by match score
+    return suggestions.sort((a, b) => {
+      const depthDiff = (b.aliasDepth || 0) - (a.aliasDepth || 0);
+      if (depthDiff !== 0) return depthDiff;
+      return b.matchScore - a.matchScore;
+    });
   } catch (error) {
     console.error('Error finding matching spacing variable:', error);
     return [];
@@ -1111,6 +1129,41 @@ async function resolveVariableValue(
   }
 
   return null;
+}
+
+/**
+ * Count how many alias levels deep a variable value is.
+ * Direct values return 0, single alias returns 1, chained aliases return 2+.
+ * Higher depth = more semantic (e.g., theme token > brand token > primitive).
+ */
+async function countAliasDepth(value: VariableValue, maxDepth: number = 5): Promise<number> {
+  if (maxDepth <= 0) return 0;
+
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    (value as { type: string }).type === 'VARIABLE_ALIAS'
+  ) {
+    const alias = value as { type: string; id: string };
+    try {
+      const referencedVar = await figma.variables.getVariableByIdAsync(alias.id);
+      if (!referencedVar) return 1;
+
+      const collection = await figma.variables.getVariableCollectionByIdAsync(
+        referencedVar.variableCollectionId
+      );
+      if (!collection) return 1;
+
+      const modeId = collection.modes[0].modeId;
+      const nestedValue = referencedVar.valuesByMode[modeId];
+      return 1 + await countAliasDepth(nestedValue, maxDepth - 1);
+    } catch {
+      return 1;
+    }
+  }
+
+  return 0;
 }
 
 /**
