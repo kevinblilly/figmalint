@@ -85,6 +85,8 @@ export interface DesignToken {
     path?: string;
     description?: string;
     property?: string;
+    /** Whether a matching design token variable exists for this hard-coded value */
+    hasMatchingToken?: boolean;
   };
 }
 

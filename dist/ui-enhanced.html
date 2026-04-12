@@ -1860,6 +1860,14 @@
       cursor: not-allowed;
     }
 
+    .no-match-label {
+      font-size: var(--font-size-xs);
+      color: var(--text-disabled, #999);
+      white-space: nowrap;
+      padding: var(--spacing-02) 0;
+      font-style: italic;
+    }
+
     .token-actions {
       display: flex;
       gap: 4px;
@@ -2741,6 +2749,7 @@
     let currentAuditScore = 0;
     let quickActionsFixCount = 0;
     let namingItemsShown = 15; // Initial limit for naming pagination
+    let fixedNamingNodeIds = new Set(); // Track nodeIds that have been batch-renamed
 
     // Chat State Management
     let chatHistory = [];
@@ -3105,9 +3114,14 @@
               const severityClass = issue.severity === 'error' ? 'fail' : issue.severity === 'warning' ? 'warning' : 'info';
               const escapedCurrent = issue.currentName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
               const escapedSuggested = issue.suggestedName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+              const isAlreadyFixed = fixedNamingNodeIds.has(issue.nodeId);
 
               const itemEl = document.createElement('div');
               itemEl.className = 'naming-tree-item';
+              if (isAlreadyFixed) {
+                itemEl.style.opacity = '0.4';
+                itemEl.classList.add('fix-applied-success');
+              }
               itemEl.setAttribute('data-node-id', issue.nodeId);
               itemEl.setAttribute('onclick', `if(event.target.tagName!=='BUTTON')selectFigmaNode('${issue.nodeId}')`);
               itemEl.title = 'Click to select this layer in Figma';
@@ -3121,7 +3135,7 @@
                   </span>
                   <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 2px;">${issue.reason}</div>
                 </div>
-                <button class="audit-action-button" data-node-id="${issue.nodeId}" onclick="event.stopPropagation();previewNamingFix('${issue.nodeId}', '${escapedCurrent}', '${escapedSuggested}')" title="Rename this layer">Rename</button>
+                <button class="audit-action-button${isAlreadyFixed ? ' fix-applied' : ''}" data-node-id="${issue.nodeId}" onclick="event.stopPropagation();previewNamingFix('${issue.nodeId}', '${escapedCurrent}', '${escapedSuggested}')" title="Rename this layer"${isAlreadyFixed ? ' disabled' : ''}>${isAlreadyFixed ? '\u2713' : 'Rename'}</button>
               `;
               lastGroupItems.appendChild(itemEl);
               lastGroupItems.style.maxHeight = lastGroupItems.scrollHeight + 'px';
@@ -3146,9 +3160,10 @@
         const severityClass = issue.severity === 'error' ? 'fail' : issue.severity === 'warning' ? 'warning' : 'info';
         const escapedCurrent = issue.currentName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
         const escapedSuggested = issue.suggestedName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const isAlreadyFixed = fixedNamingNodeIds.has(issue.nodeId);
 
         html += `
-          <div class="naming-tree-item" data-node-id="${issue.nodeId}" onclick="if(event.target.tagName!=='BUTTON')selectFigmaNode('${issue.nodeId}')" title="Click to select this layer in Figma">
+          <div class="naming-tree-item" data-node-id="${issue.nodeId}" ${isAlreadyFixed ? 'style="opacity: 0.4;"' : ''} onclick="if(event.target.tagName!=='BUTTON')selectFigmaNode('${issue.nodeId}')" title="Click to select this layer in Figma">
             <span class="audit-status ${severityClass}">${severityIcon}</span>
             <div class="audit-content">
               <span class="audit-label">
@@ -3158,7 +3173,7 @@
               </span>
               <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 2px;">${issue.reason}</div>
             </div>
-            <button class="audit-action-button" data-node-id="${issue.nodeId}" onclick="event.stopPropagation();previewNamingFix('${issue.nodeId}', '${escapedCurrent}', '${escapedSuggested}')" title="Rename this layer">Rename</button>
+            <button class="audit-action-button${isAlreadyFixed ? ' fix-applied' : ''}" data-node-id="${issue.nodeId}" onclick="event.stopPropagation();previewNamingFix('${issue.nodeId}', '${escapedCurrent}', '${escapedSuggested}')" title="Rename this layer"${isAlreadyFixed ? ' disabled' : ''}>${isAlreadyFixed ? '\u2713' : 'Rename'}</button>
           </div>
         `;
       }
@@ -4289,6 +4304,7 @@
       // Store naming issues and fixable tokens for auto-fix
       currentNamingIssues = data.namingIssues || [];
       namingItemsShown = 15; // Reset pagination on new analysis
+      fixedNamingNodeIds = new Set(); // Reset fixed tracking on new analysis
       currentFixableTokens = [];
       if (data.tokens) {
         ['colors', 'spacing', 'typography', 'effects', 'borders'].forEach(cat => {
@@ -5115,7 +5131,8 @@
         // Show hard-coded colors with enhanced context
         if (hardCodedTokens.length > 0) {
           html += '<div style="margin-bottom: 12px;" id="section-colors">';
-          const clrFixAll = hardCodedTokens.filter(t => t.context?.nodeId && t.context?.property).length > 1
+          const fixableColors = hardCodedTokens.filter(t => t.context?.nodeId && t.context?.property && t.context?.hasMatchingToken !== false);
+          const clrFixAll = fixableColors.length > 1
             ? `<button class="fix-btn" onclick="event.stopPropagation();batchFixAllTokens('section-colors')" title="Fix all hard-coded colors" style="margin-left: 6px; font-size: 10px;">Fix All</button>` : '';
           html += `<h5 style="font-size: 11px; font-weight: 500; color: var(--warning); margin-bottom: 4px; display: flex; align-items: center;">Hard-coded Colors${clrFixAll}</h5>`;
           hardCodedTokens.forEach(token => {
@@ -5123,8 +5140,14 @@
               `${token.context.nodeType} in "${token.context.nodeName}"${token.context.isInteractive ? ' (Interactive)' : ''}` :
               'Unknown context';
 
-            const fixButton = token.context?.nodeId && token.context?.property ?
-              `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property || 'fills[0]'}', '${token.value}')" title="Fix this hard-coded value">Fix</button>` : '';
+            let fixButton = '';
+            if (token.context?.nodeId && token.context?.property) {
+              if (token.context?.hasMatchingToken === false) {
+                fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
+              } else {
+                fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property || 'fills[0]'}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+              }
+            }
 
             html += `
               <div class="token-item-compact warning" ${token.context?.nodeId ? `onclick="selectFigmaNode('${token.context.nodeId}')" style="cursor: pointer;" title="Click to select in Figma"` : ''}>
@@ -5250,7 +5273,8 @@
           // Stroke Weight Section
           if (strokeWeights.length > 0) {
             html += '<div style="margin-bottom: 12px;" id="section-stroke-weight">';
-            const swFixAll = strokeWeights.filter(t => t.context?.nodeId && t.context?.property).length > 1
+            const fixableStrokeWeights = strokeWeights.filter(t => t.context?.nodeId && t.context?.property && t.context?.hasMatchingToken !== false);
+            const swFixAll = fixableStrokeWeights.length > 1
               ? `<button class="fix-btn" onclick="event.stopPropagation();batchFixAllTokens('section-stroke-weight')" title="Fix all hard-coded stroke weights" style="margin-left: 6px; font-size: 10px;">Fix All</button>` : '';
             html += `<h5 style="font-size: 11px; font-weight: 500; color: var(--warning); margin-bottom: 4px; display: flex; align-items: center;">Hard-coded Stroke Weight${swFixAll}</h5>`;
             strokeWeights.forEach(token => {
@@ -5271,8 +5295,14 @@
                 }
               }
 
-              const fixButton = token.context?.nodeId && token.context?.property ?
-                `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>` : '';
+              let fixButton = '';
+              if (token.context?.nodeId && token.context?.property) {
+                if (token.context?.hasMatchingToken === false) {
+                  fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
+                } else {
+                  fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+                }
+              }
 
               html += `
                 <div class="token-item-compact warning" ${token.context?.nodeId ? `onclick="selectFigmaNode('${token.context.nodeId}')" style="cursor: pointer;" title="Click to select in Figma"` : ''}>
@@ -5293,7 +5323,8 @@
           // Border Radius Section
           if (borderRadius.length > 0) {
             html += '<div id="section-border-radius">';
-            const brFixAll = borderRadius.filter(t => t.context?.nodeId && t.context?.property).length > 1
+            const fixableBorderRadius = borderRadius.filter(t => t.context?.nodeId && t.context?.property && t.context?.hasMatchingToken !== false);
+            const brFixAll = fixableBorderRadius.length > 1
               ? `<button class="fix-btn" onclick="event.stopPropagation();batchFixAllTokens('section-border-radius')" title="Fix all hard-coded border radii" style="margin-left: 6px; font-size: 10px;">Fix All</button>` : '';
             html += `<h5 style="font-size: 11px; font-weight: 500; color: var(--warning); margin-bottom: 4px; display: flex; align-items: center;">Hard-coded Border Radius${brFixAll}</h5>`;
             borderRadius.forEach(token => {
@@ -5314,8 +5345,14 @@
                 }
               }
 
-              const fixButton = token.context?.nodeId && token.context?.property ?
-                `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>` : '';
+              let fixButton = '';
+              if (token.context?.nodeId && token.context?.property) {
+                if (token.context?.hasMatchingToken === false) {
+                  fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
+                } else {
+                  fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+                }
+              }
 
               html += `
                 <div class="token-item-compact warning" ${token.context?.nodeId ? `onclick="selectFigmaNode('${token.context.nodeId}')" style="cursor: pointer;" title="Click to select in Figma"` : ''}>
@@ -5366,7 +5403,8 @@
 
         if (hardCodedSpacing.length > 0) {
           html += '<div id="section-spacing">';
-          const spFixAll = hardCodedSpacing.filter(t => t.context?.nodeId && t.context?.property).length > 1
+          const fixableSpacing = hardCodedSpacing.filter(t => t.context?.nodeId && t.context?.property && t.context?.hasMatchingToken !== false);
+          const spFixAll = fixableSpacing.length > 1
             ? `<button class="fix-btn" onclick="event.stopPropagation();batchFixAllTokens('section-spacing')" title="Fix all hard-coded spacing" style="margin-left: 6px; font-size: 10px;">Fix All</button>` : '';
           html += `<h5 style="font-size: 11px; font-weight: 500; color: var(--warning); margin-bottom: 4px; display: flex; align-items: center;">Hard-coded Spacing${spFixAll}</h5>`;
           hardCodedSpacing.forEach(token => {
@@ -5387,8 +5425,14 @@
               }
             }
 
-            const fixButton = token.context?.nodeId && token.context?.property ?
-              `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>` : '';
+            let fixButton = '';
+            if (token.context?.nodeId && token.context?.property) {
+              if (token.context?.hasMatchingToken === false) {
+                fixButton = `<span class="no-match-label" title="Add a variable matching this value to enable auto-fix">No matching token</span>`;
+              } else {
+                fixButton = `<button class="fix-btn" data-node-id="${token.context.nodeId}" onclick="event.stopPropagation();previewTokenFix('${token.context.nodeId}', '${token.context.property}', '${token.value}')" title="Fix this hard-coded value">Fix</button>`;
+              }
+            }
 
             html += `
               <div class="token-item-compact warning" ${token.context?.nodeId ? `onclick="selectFigmaNode('${token.context.nodeId}')" style="cursor: pointer;" title="Click to select in Figma"` : ''}>
@@ -6282,10 +6326,17 @@
       const errorCount = data.errors || data.failedCount || 0;
       const total = data.total || (successCount + errorCount);
 
+      // Check if failures are all due to no matching tokens
+      const noMatchCount = data.results ? data.results.filter(r => !r.success && r.message && r.message.includes('No matching token')).length : 0;
+
       if (errorCount === 0) {
         updateStatus(`All ${successCount} fixes applied successfully! Re-analyze to see updated results.`, 'success');
+      } else if (successCount > 0 && noMatchCount === errorCount) {
+        updateStatus(`Applied ${successCount}/${total} fixes. ${noMatchCount} skipped — no matching tokens found. Add variables for those values.`, 'warning');
       } else if (successCount > 0) {
         updateStatus(`Applied ${successCount}/${total} fixes (${errorCount} failed). Re-analyze to see updated results.`, 'warning');
+      } else if (noMatchCount === errorCount) {
+        updateStatus(`No matching tokens found for ${errorCount} value${errorCount !== 1 ? 's' : ''}. Add matching variables to your design tokens to enable auto-fix.`, 'error');
       } else {
         updateStatus(`Failed to apply ${errorCount} fix${errorCount !== 1 ? 'es' : ''}`, 'error');
       }
@@ -6293,51 +6344,58 @@
       // Update quick actions count
       decrementQuickActionsCount(successCount);
 
-      // Mark successfully fixed items in the UI (both naming and token)
+      // Mark successfully fixed items in the UI, separated by fix type
       if (data.results && data.results.length > 0) {
         let namingSuccessCount = 0;
+        let tokenSuccessCount = 0;
         data.results.forEach(result => {
           if (result.success && result.nodeId) {
-            // Try naming tree items first
-            const namingBtn = document.querySelector(`.audit-action-button[data-node-id="${result.nodeId}"]`);
-            if (namingBtn) {
-              namingBtn.textContent = '\u2713';
-              namingBtn.classList.add('fix-applied');
-              namingBtn.disabled = true;
-              const treeItem = namingBtn.closest('.naming-tree-item');
-              if (treeItem) {
-                treeItem.style.opacity = '0.4';
-                treeItem.classList.add('fix-applied-success');
-                // Update displayed name to show what was actually applied
-                if (result.newName) {
-                  const labelEl = treeItem.querySelector('.audit-label');
-                  if (labelEl) {
-                    const codes = labelEl.querySelectorAll('code');
-                    if (codes.length >= 2) {
-                      codes[1].textContent = result.newName;
+            if (result.fixType === 'naming') {
+              // Track this nodeId as fixed so "Show More" renders it correctly
+              fixedNamingNodeIds.add(result.nodeId);
+
+              // Update naming tree items only
+              const namingBtn = document.querySelector(`.audit-action-button[data-node-id="${result.nodeId}"]`);
+              if (namingBtn) {
+                namingBtn.textContent = '\u2713';
+                namingBtn.classList.add('fix-applied');
+                namingBtn.disabled = true;
+                const treeItem = namingBtn.closest('.naming-tree-item');
+                if (treeItem) {
+                  treeItem.style.opacity = '0.4';
+                  treeItem.classList.add('fix-applied-success');
+                  // Update displayed name to show what was actually applied
+                  if (result.newName) {
+                    const labelEl = treeItem.querySelector('.audit-label');
+                    if (labelEl) {
+                      const codes = labelEl.querySelectorAll('code');
+                      if (codes.length >= 2) {
+                        codes[1].textContent = result.newName;
+                      }
                     }
                   }
                 }
+                namingSuccessCount++;
               }
-              namingSuccessCount++;
+            } else if (result.fixType === 'token') {
+              // Update token fix buttons only
+              const tokenBtns = document.querySelectorAll(`.fix-btn[data-node-id="${result.nodeId}"]`);
+              tokenBtns.forEach(btn => {
+                btn.textContent = '\u2713';
+                btn.classList.add('fix-applied');
+                btn.disabled = true;
+                const tokenItem = btn.closest('.token-item-compact');
+                if (tokenItem) {
+                  tokenItem.classList.remove('warning', 'token-item-selected');
+                  tokenItem.classList.add('token-item-fixed');
+                  tokenItem.classList.add('fix-applied-success');
+                  tokenItem.addEventListener('animationend', () => {
+                    tokenItem.classList.remove('fix-applied-success');
+                  }, { once: true });
+                }
+              });
+              tokenSuccessCount++;
             }
-
-            // Also update token fix buttons
-            const tokenBtns = document.querySelectorAll(`.fix-btn[data-node-id="${result.nodeId}"]`);
-            tokenBtns.forEach(btn => {
-              btn.textContent = '\u2713';
-              btn.classList.add('fix-applied');
-              btn.disabled = true;
-              const tokenItem = btn.closest('.token-item-compact');
-              if (tokenItem) {
-                tokenItem.classList.remove('warning', 'token-item-selected');
-                tokenItem.classList.add('token-item-fixed');
-                tokenItem.classList.add('fix-applied-success');
-                tokenItem.addEventListener('animationend', () => {
-                  tokenItem.classList.remove('fix-applied-success');
-                }, { once: true });
-              }
-            });
           }
         });
 
@@ -6368,28 +6426,30 @@
         }
       }
 
-      // Disable section-level "Fix All" buttons if all items in that section are fixed
-      ['section-colors', 'section-stroke-weight', 'section-border-radius', 'section-spacing'].forEach(sectionId => {
-        const section = document.getElementById(sectionId);
-        if (!section) return;
-        const remainingWarnings = section.querySelectorAll('.token-item-compact.warning');
-        if (remainingWarnings.length === 0) {
-          const sectionFixAll = section.querySelector('.fix-btn');
-          if (sectionFixAll && !sectionFixAll.closest('.token-item-compact')) {
-            sectionFixAll.textContent = '\u2713 Done';
-            sectionFixAll.disabled = true;
-            sectionFixAll.classList.add('fix-applied');
+      // Disable section-level "Fix All" buttons if all items in that section are fixed — only check after token fixes
+      if (tokenSuccessCount > 0) {
+        ['section-colors', 'section-stroke-weight', 'section-border-radius', 'section-spacing'].forEach(sectionId => {
+          const section = document.getElementById(sectionId);
+          if (!section) return;
+          const remainingWarnings = section.querySelectorAll('.token-item-compact.warning');
+          if (remainingWarnings.length === 0) {
+            const sectionFixAll = section.querySelector('.fix-btn');
+            if (sectionFixAll && !sectionFixAll.closest('.token-item-compact')) {
+              sectionFixAll.textContent = '\u2713 Done';
+              sectionFixAll.disabled = true;
+              sectionFixAll.classList.add('fix-applied');
+            }
           }
-        }
-      });
+        });
+      }
 
-      // Update the batch token fix bar count
-      if (successCount > 0) {
+      // Update the batch token fix bar count — only for token fixes
+      if (tokenSuccessCount > 0) {
         const batchBar = document.querySelector('.batch-action-bar .batch-label');
         if (batchBar) {
           const match = batchBar.textContent.match(/(\d+)/);
           if (match) {
-            const remaining = Math.max(0, parseInt(match[1], 10) - successCount);
+            const remaining = Math.max(0, parseInt(match[1], 10) - tokenSuccessCount);
             if (remaining > 0) {
               batchBar.innerHTML = `${ICO.warnTriangle} ${remaining} hard-coded value${remaining !== 1 ? 's' : ''} found`;
             } else {
@@ -6400,14 +6460,14 @@
             }
           }
         }
-      }
 
-      // Disable the Fix All button in the fix-summary-bar (not the Rename All button)
-      const fixAllBtn = document.querySelector('#fix-summary-bar .quick-actions-btn');
-      if (fixAllBtn && successCount > 0) {
-        fixAllBtn.textContent = '\u2713 Applied';
-        fixAllBtn.disabled = true;
-        fixAllBtn.classList.add('fix-applied');
+        // Disable the Fix All button in the fix-summary-bar — only for token fixes
+        const fixAllBtn = document.querySelector('#fix-summary-bar .quick-actions-btn');
+        if (fixAllBtn) {
+          fixAllBtn.textContent = '\u2713 Applied';
+          fixAllBtn.disabled = true;
+          fixAllBtn.classList.add('fix-applied');
+        }
       }
     }
 
@@ -6416,8 +6476,6 @@
     // =============================================
 
     // Phase 2: Compute fixable issue counts from analysis data
-    // Only naming issues are truly auto-fixable. Token hard-coded values and
-    // accessibility failures require manual intervention.
     function computeFixableCounts(data) {
       const counts = { tokens: 0, naming: 0, accessibility: 0, total: 0 };
 
@@ -6426,7 +6484,20 @@
         counts.naming = data.namingIssues.length;
       }
 
-      counts.total = counts.naming;
+      // Count fixable hard-coded token values
+      if (data.tokens) {
+        ['colors', 'spacing', 'typography', 'effects', 'borders'].forEach(cat => {
+          if (data.tokens[cat] && Array.isArray(data.tokens[cat])) {
+            data.tokens[cat].forEach(token => {
+              if (!token.isActualToken && token.source === 'hard-coded' && !token.isDefaultVariantStyle && token.context && token.context.nodeId) {
+                counts.tokens++;
+              }
+            });
+          }
+        });
+      }
+
+      counts.total = counts.naming + counts.tokens;
       return counts;
     }
 
@@ -6436,13 +6507,16 @@
 
       quickActionsFixCount = counts.total;
 
+      const chips = [];
+      if (counts.naming > 0) chips.push(`<span class="stat-chip">${counts.naming} naming</span>`);
+      if (counts.tokens > 0) chips.push(`<span class="stat-chip">${counts.tokens} token${counts.tokens !== 1 ? 's' : ''}</span>`);
+
       return `
         <div class="fix-summary-bar" id="fix-summary-bar">
           <div class="fix-summary-stats">
             <strong>${counts.total} fixable issue${counts.total !== 1 ? 's' : ''}</strong>
-            <span class="stat-chip">${counts.naming} naming</span>
+            ${chips.join('')}
           </div>
-          <button class="quick-actions-btn" onclick="handleRenameAll()">Rename All</button>
         </div>
       `;
     }

@@ -2648,6 +2648,522 @@ Focus on creating a comprehensive DESIGN analysis that helps designers build sca
     return str.replace(/([a-z])([A-Z])/g, "$1-$2").replace(/[\s_]+/g, "-").replace(/[^a-zA-Z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
   }
 
+  // src/fixes/token-fixer.ts
+  async function bindColorToken(node, propertyType, variableId, paintIndex = 0) {
+    try {
+      if (!(propertyType in node)) {
+        return {
+          success: false,
+          message: `Node does not support ${propertyType}`,
+          error: `Property ${propertyType} not found on node type ${node.type}`
+        };
+      }
+      const variable = await figma.variables.getVariableByIdAsync(variableId);
+      if (!variable) {
+        return {
+          success: false,
+          message: "Variable not found",
+          error: `Could not find variable with ID: ${variableId}`
+        };
+      }
+      if (variable.resolvedType !== "COLOR") {
+        return {
+          success: false,
+          message: "Variable is not a color type",
+          error: `Variable ${variable.name} is of type ${variable.resolvedType}, expected COLOR`
+        };
+      }
+      const nodeWithPaints = node;
+      const paints = [...nodeWithPaints[propertyType]];
+      if (paintIndex >= paints.length) {
+        return {
+          success: false,
+          message: "Paint index out of range",
+          error: `Paint index ${paintIndex} does not exist. Node has ${paints.length} ${propertyType}.`
+        };
+      }
+      const currentPaint = paints[paintIndex];
+      if (currentPaint.type !== "SOLID") {
+        return {
+          success: false,
+          message: "Can only bind to solid paints",
+          error: `Paint at index ${paintIndex} is of type ${currentPaint.type}, expected SOLID`
+        };
+      }
+      const boundPaint = figma.variables.setBoundVariableForPaint(
+        currentPaint,
+        "color",
+        variable
+      );
+      paints[paintIndex] = boundPaint;
+      if (propertyType === "fills") {
+        node.fills = paints;
+      } else {
+        node.strokes = paints;
+      }
+      return {
+        success: true,
+        message: `Successfully bound ${variable.name} to ${propertyType}[${paintIndex}]`,
+        appliedFix: {
+          nodeId: node.id,
+          nodeName: node.name,
+          propertyPath: `${propertyType}[${paintIndex}]`,
+          beforeValue: currentPaint.type === "SOLID" && currentPaint.color ? rgbToHex(currentPaint.color.r, currentPaint.color.g, currentPaint.color.b) : "unknown",
+          afterValue: variable.name,
+          tokenId: variableId,
+          tokenName: variable.name,
+          fixType: "color"
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: "Failed to bind color token",
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  async function bindSpacingToken(node, property, variableId) {
+    try {
+      if (!(property in node)) {
+        return {
+          success: false,
+          message: `Node does not support ${property}`,
+          error: `Property ${property} not found on node type ${node.type}`
+        };
+      }
+      const variable = await figma.variables.getVariableByIdAsync(variableId);
+      if (!variable) {
+        return {
+          success: false,
+          message: "Variable not found",
+          error: `Could not find variable with ID: ${variableId}`
+        };
+      }
+      if (variable.resolvedType !== "FLOAT") {
+        return {
+          success: false,
+          message: "Variable is not a number type",
+          error: `Variable ${variable.name} is of type ${variable.resolvedType}, expected FLOAT`
+        };
+      }
+      const currentValue = node[property];
+      const bindableNode = node;
+      bindableNode.setBoundVariable(property, variable);
+      return {
+        success: true,
+        message: `Successfully bound ${variable.name} to ${property}`,
+        appliedFix: {
+          nodeId: node.id,
+          nodeName: node.name,
+          propertyPath: property,
+          beforeValue: typeof currentValue === "number" ? `${currentValue}px` : String(currentValue),
+          afterValue: variable.name,
+          tokenId: variableId,
+          tokenName: variable.name,
+          fixType: property.includes("Radius") ? "border" : "spacing"
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: "Failed to bind spacing token",
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  var libraryVariableCache = null;
+  var libraryCollectionCache = null;
+  async function getLibraryVariables(resolvedType) {
+    if (libraryVariableCache !== null && libraryCollectionCache !== null) {
+      const filtered2 = libraryVariableCache.filter((v) => v.resolvedType === resolvedType);
+      return { variables: filtered2, collectionNames: libraryCollectionCache };
+    }
+    const allImported = [];
+    const collectionNames = /* @__PURE__ */ new Map();
+    try {
+      const libraryCollections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+      for (const libCollection of libraryCollections) {
+        try {
+          const libraryVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCollection.key);
+          for (const libVar of libraryVars) {
+            try {
+              const imported = await figma.variables.importVariableByKeyAsync(libVar.key);
+              allImported.push(imported);
+              if (!collectionNames.has(imported.variableCollectionId)) {
+                collectionNames.set(
+                  imported.variableCollectionId,
+                  `${libCollection.libraryName} / ${libCollection.name}`
+                );
+              }
+            } catch (importErr) {
+              console.warn(`Failed to import library variable ${libVar.name}:`, importErr);
+            }
+          }
+        } catch (collErr) {
+          console.warn(`Failed to load variables from library collection ${libCollection.name}:`, collErr);
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to load library variable collections:", error);
+    }
+    libraryVariableCache = allImported;
+    libraryCollectionCache = collectionNames;
+    const filtered = allImported.filter((v) => v.resolvedType === resolvedType);
+    return { variables: filtered, collectionNames };
+  }
+  async function findMatchingColorVariable(hexColor, tolerance = 0) {
+    try {
+      const targetRgb = hexToRgb(hexColor);
+      if (!targetRgb) {
+        return [];
+      }
+      const suggestions = [];
+      const seenVariableIds = /* @__PURE__ */ new Set();
+      const colorVariables = await figma.variables.getLocalVariablesAsync("COLOR");
+      const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      const collectionMap = /* @__PURE__ */ new Map();
+      for (const collection of collections) {
+        collectionMap.set(collection.id, collection);
+      }
+      for (const variable of colorVariables) {
+        const collection = collectionMap.get(variable.variableCollectionId);
+        if (!collection) continue;
+        const modeId = collection.modes[0].modeId;
+        const value = variable.valuesByMode[modeId];
+        if (!value) continue;
+        const resolved = await resolveVariableValue(value);
+        if (!resolved || typeof resolved === "number") continue;
+        const varColor = resolved;
+        const matchScore = calculateColorMatchScore(targetRgb, varColor);
+        if (matchScore >= 1 - tolerance) {
+          seenVariableIds.add(variable.id);
+          suggestions.push({
+            variableId: variable.id,
+            variableName: variable.name,
+            collectionName: collection.name,
+            value: rgbToHex(varColor.r, varColor.g, varColor.b),
+            matchScore,
+            type: "color"
+          });
+        }
+      }
+      try {
+        const { variables: libColorVars, collectionNames } = await getLibraryVariables("COLOR");
+        for (const variable of libColorVars) {
+          if (seenVariableIds.has(variable.id)) continue;
+          const varCollection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+          if (!varCollection) continue;
+          const modeId = varCollection.modes[0].modeId;
+          const value = variable.valuesByMode[modeId];
+          if (!value) continue;
+          const resolved = await resolveVariableValue(value);
+          if (!resolved || typeof resolved === "number") continue;
+          const varColor = resolved;
+          const matchScore = calculateColorMatchScore(targetRgb, varColor);
+          if (matchScore >= 1 - tolerance) {
+            seenVariableIds.add(variable.id);
+            suggestions.push({
+              variableId: variable.id,
+              variableName: variable.name,
+              collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
+              value: rgbToHex(varColor.r, varColor.g, varColor.b),
+              matchScore,
+              type: "color"
+            });
+          }
+        }
+      } catch (libError) {
+        console.warn("Library variable search failed for colors:", libError);
+      }
+      return suggestions.sort((a, b) => b.matchScore - a.matchScore);
+    } catch (error) {
+      console.error("Error finding matching color variable:", error);
+      return [];
+    }
+  }
+  async function findMatchingSpacingVariable(pixelValue, tolerance = 0) {
+    try {
+      const suggestions = [];
+      const seenVariableIds = /* @__PURE__ */ new Set();
+      const numberVariables = await figma.variables.getLocalVariablesAsync("FLOAT");
+      const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      const collectionMap = /* @__PURE__ */ new Map();
+      for (const collection of collections) {
+        collectionMap.set(collection.id, collection);
+      }
+      for (const variable of numberVariables) {
+        const collection = collectionMap.get(variable.variableCollectionId);
+        if (!collection) continue;
+        const modeId = collection.modes[0].modeId;
+        const rawValue = variable.valuesByMode[modeId];
+        const resolved = await resolveVariableValue(rawValue);
+        if (typeof resolved !== "number") continue;
+        const value = resolved;
+        const difference = Math.abs(value - pixelValue);
+        if (difference <= tolerance) {
+          const matchScore = difference === 0 ? 1 : 1 - difference / (tolerance || 1);
+          seenVariableIds.add(variable.id);
+          suggestions.push({
+            variableId: variable.id,
+            variableName: variable.name,
+            collectionName: collection.name,
+            value: `${value}px`,
+            matchScore,
+            type: "number"
+          });
+        }
+      }
+      try {
+        const { variables: libNumberVars, collectionNames } = await getLibraryVariables("FLOAT");
+        for (const variable of libNumberVars) {
+          if (seenVariableIds.has(variable.id)) continue;
+          const varCollection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+          if (!varCollection) continue;
+          const modeId = varCollection.modes[0].modeId;
+          const rawValue = variable.valuesByMode[modeId];
+          const resolved = await resolveVariableValue(rawValue);
+          if (typeof resolved !== "number") continue;
+          const value = resolved;
+          const difference = Math.abs(value - pixelValue);
+          if (difference <= tolerance) {
+            const matchScore = difference === 0 ? 1 : 1 - difference / (tolerance || 1);
+            seenVariableIds.add(variable.id);
+            suggestions.push({
+              variableId: variable.id,
+              variableName: variable.name,
+              collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
+              value: `${value}px`,
+              matchScore,
+              type: "number"
+            });
+          }
+        }
+      } catch (libError) {
+        console.warn("Library variable search failed for spacing:", libError);
+      }
+      return suggestions.sort((a, b) => b.matchScore - a.matchScore);
+    } catch (error) {
+      console.error("Error finding matching spacing variable:", error);
+      return [];
+    }
+  }
+  async function findBestMatchingVariable(pixelValue, propertyPath, tolerance = 2) {
+    const suggestions = await findMatchingSpacingVariable(pixelValue, tolerance);
+    if (suggestions.length === 0) return suggestions;
+    const affinityMap = {
+      strokeWeight: ["stroke", "border-width", "border/width", "borderwidth"],
+      cornerRadius: ["radius", "corner", "round", "border-radius"],
+      topLeftRadius: ["radius", "corner", "round"],
+      topRightRadius: ["radius", "corner", "round"],
+      bottomLeftRadius: ["radius", "corner", "round"],
+      bottomRightRadius: ["radius", "corner", "round"],
+      paddingTop: ["padding", "spacing", "space"],
+      paddingRight: ["padding", "spacing", "space"],
+      paddingBottom: ["padding", "spacing", "space"],
+      paddingLeft: ["padding", "spacing", "space"],
+      itemSpacing: ["gap", "spacing", "space"],
+      counterAxisSpacing: ["gap", "spacing", "space"]
+    };
+    const keywords = affinityMap[propertyPath] || [];
+    if (keywords.length === 0) return suggestions;
+    const boosted = suggestions.map((s) => {
+      const nameLower = s.variableName.toLowerCase();
+      const hasAffinity = keywords.some((kw) => nameLower.includes(kw));
+      return __spreadProps(__spreadValues({}, s), {
+        matchScore: hasAffinity ? Math.min(s.matchScore + 0.3, 1) : s.matchScore
+      });
+    });
+    return boosted.sort((a, b) => b.matchScore - a.matchScore);
+  }
+  async function applyColorFix(node, propertyPath, tokenId) {
+    const match = propertyPath.match(/^(fills|strokes)\[(\d+)\]$/);
+    if (!match) {
+      return {
+        success: false,
+        message: "Invalid property path",
+        error: `Expected format: fills[n] or strokes[n], got: ${propertyPath}`
+      };
+    }
+    const [, propertyType, indexStr] = match;
+    const paintIndex = parseInt(indexStr, 10);
+    return bindColorToken(
+      node,
+      propertyType,
+      tokenId,
+      paintIndex
+    );
+  }
+  async function applySpacingFix(node, propertyPath, tokenId) {
+    const validProperties = [
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft",
+      "itemSpacing",
+      "counterAxisSpacing",
+      "cornerRadius",
+      "topLeftRadius",
+      "topRightRadius",
+      "bottomLeftRadius",
+      "bottomRightRadius",
+      "strokeWeight"
+    ];
+    if (!validProperties.includes(propertyPath)) {
+      return {
+        success: false,
+        message: "Invalid property path",
+        error: `Property ${propertyPath} is not a valid spacing property`
+      };
+    }
+    if (propertyPath === "cornerRadius") {
+      const corners = [
+        "topLeftRadius",
+        "topRightRadius",
+        "bottomLeftRadius",
+        "bottomRightRadius"
+      ];
+      const results = [];
+      for (const corner of corners) {
+        const result = await bindSpacingToken(node, corner, tokenId);
+        results.push(result);
+        if (!result.success) {
+          return {
+            success: false,
+            message: `Failed to bind ${corner}`,
+            error: result.error
+          };
+        }
+      }
+      return {
+        success: true,
+        message: `Successfully bound variable to all 4 corner radii`,
+        appliedFix: results[0].appliedFix ? __spreadProps(__spreadValues({}, results[0].appliedFix), { propertyPath: "cornerRadius" }) : void 0
+      };
+    }
+    return bindSpacingToken(
+      node,
+      propertyPath,
+      tokenId
+    );
+  }
+  async function previewFix(node, propertyPath, tokenId) {
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(tokenId);
+      if (!variable) {
+        return null;
+      }
+      let fixType;
+      let beforeValue;
+      const colorMatch = propertyPath.match(/^(fills|strokes)\[(\d+)\]$/);
+      if (colorMatch) {
+        fixType = "color";
+        const [, propertyType, indexStr] = colorMatch;
+        const paintIndex = parseInt(indexStr, 10);
+        if (!(propertyType in node)) {
+          return null;
+        }
+        const nodeWithPaints = node;
+        const paints = nodeWithPaints[propertyType];
+        if (paintIndex >= paints.length) {
+          return null;
+        }
+        const paint = paints[paintIndex];
+        if (paint.type === "SOLID" && paint.color) {
+          beforeValue = rgbToHex(paint.color.r, paint.color.g, paint.color.b);
+        } else {
+          beforeValue = paint.type;
+        }
+      } else {
+        if (!(propertyPath in node)) {
+          return null;
+        }
+        const currentValue = node[propertyPath];
+        beforeValue = typeof currentValue === "number" ? `${currentValue}px` : String(currentValue);
+        fixType = propertyPath.includes("Radius") ? "border" : "spacing";
+      }
+      let afterValue = variable.name;
+      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      if (collection) {
+        const modeId = collection.modes[0].modeId;
+        const value = variable.valuesByMode[modeId];
+        if (typeof value === "number") {
+          afterValue = `${variable.name} (${value}px)`;
+        } else if (value && typeof value === "object" && "r" in value) {
+          const rgb = value;
+          afterValue = `${variable.name} (${rgbToHex(rgb.r, rgb.g, rgb.b)})`;
+        }
+      }
+      return {
+        nodeId: node.id,
+        nodeName: node.name,
+        propertyPath,
+        beforeValue,
+        afterValue,
+        tokenId,
+        tokenName: variable.name,
+        fixType
+      };
+    } catch (error) {
+      console.error("Error generating fix preview:", error);
+      return null;
+    }
+  }
+  async function resolveVariableValue(value) {
+    if (typeof value === "object" && value !== null && "r" in value) {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "object" && value !== null && "type" in value && value.type === "VARIABLE_ALIAS") {
+      const alias = value;
+      try {
+        const referencedVar = await figma.variables.getVariableByIdAsync(alias.id);
+        if (!referencedVar) return null;
+        const collection = await figma.variables.getVariableCollectionByIdAsync(
+          referencedVar.variableCollectionId
+        );
+        if (!collection) return null;
+        const modeId = collection.modes[0].modeId;
+        const nestedValue = referencedVar.valuesByMode[modeId];
+        return resolveVariableValue(nestedValue);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+  function hexToRgb(hex) {
+    const cleanHex = hex.replace(/^#/, "");
+    let fullHex = cleanHex;
+    if (cleanHex.length === 3) {
+      fullHex = cleanHex[0] + cleanHex[0] + cleanHex[1] + cleanHex[1] + cleanHex[2] + cleanHex[2];
+    }
+    if (fullHex.length !== 6) {
+      return null;
+    }
+    const r = parseInt(fullHex.substring(0, 2), 16);
+    const g = parseInt(fullHex.substring(2, 4), 16);
+    const b = parseInt(fullHex.substring(4, 6), 16);
+    if (isNaN(r) || isNaN(g) || isNaN(b)) {
+      return null;
+    }
+    return {
+      r: r / 255,
+      g: g / 255,
+      b: b / 255
+    };
+  }
+  function calculateColorMatchScore(color1, color2) {
+    const dr = color1.r - color2.r;
+    const dg = color1.g - color2.g;
+    const db = color1.b - color2.b;
+    const distance = Math.sqrt(dr * dr + dg * dg + db * db);
+    const maxDistance = Math.sqrt(3);
+    return 1 - distance / maxDistance;
+  }
+
   // src/core/component-analyzer.ts
   async function extractComponentContext(node) {
     const hierarchy = extractLayerHierarchy(node);
@@ -3997,7 +4513,7 @@ Focus ONLY on what's actually in the Figma component for existing data. Recommen
     return cheatSheet.slice(0, 5);
   }
   async function processAnalysisResult(filteredData, context, options) {
-    var _a;
+    var _a, _b, _c;
     try {
       console.log("\u{1F504} Processing analysis result...");
       console.log("\u{1F4CA} Filtered data received:", JSON.stringify(filteredData, null, 2).substring(0, 500) + "...");
@@ -4036,6 +4552,29 @@ Focus ONLY on what's actually in the Figma component for existing data. Recommen
       };
       if (options.includeTokenAnalysis !== false) {
         tokens = await extractDesignTokensFromNode(node);
+        const categories = ["colors", "spacing", "typography", "effects", "borders"];
+        for (const category of categories) {
+          for (const token of tokens[category]) {
+            if (token.source !== "hard-coded" || !((_a = token.context) == null ? void 0 : _a.nodeId) || !((_b = token.context) == null ? void 0 : _b.property)) continue;
+            try {
+              const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(token.context.property);
+              if (isColorProperty) {
+                const matches = await findMatchingColorVariable(token.value || "", 0.1);
+                token.context.hasMatchingToken = matches.length > 0;
+              } else {
+                const pixelValue = parseFloat(token.value || "0");
+                if (!isNaN(pixelValue)) {
+                  const matches = await findBestMatchingVariable(pixelValue, token.context.property, 2);
+                  token.context.hasMatchingToken = matches.length > 0;
+                } else {
+                  token.context.hasMatchingToken = false;
+                }
+              }
+            } catch (e) {
+              token.context.hasMatchingToken = false;
+            }
+          }
+        }
       }
       const metadata = {
         component: filteredData.component || context.name || "Component",
@@ -4087,7 +4626,7 @@ Focus ONLY on what's actually in the Figma component for existing data. Recommen
           componentDescription
         })
       };
-      console.log("\u{1F4E4} Sending to UI - metadata.props:", (_a = metadata.props) == null ? void 0 : _a.length);
+      console.log("\u{1F4E4} Sending to UI - metadata.props:", (_c = metadata.props) == null ? void 0 : _c.length);
       console.log("\u{1F4E4} Sending to UI - metadata.states:", metadata.states);
       console.log("\u{1F4E4} Sending to UI - metadata.mcpReadiness:", metadata.mcpReadiness);
       const audit = await createAuditResults(filteredData, context, node, actualProperties, actualStates, tokens, componentDescription);
@@ -5275,497 +5814,6 @@ ${scoringCriteria}
   };
   var consistency_engine_default = ComponentConsistencyEngine;
 
-  // src/fixes/token-fixer.ts
-  async function bindColorToken(node, propertyType, variableId, paintIndex = 0) {
-    try {
-      if (!(propertyType in node)) {
-        return {
-          success: false,
-          message: `Node does not support ${propertyType}`,
-          error: `Property ${propertyType} not found on node type ${node.type}`
-        };
-      }
-      const variable = await figma.variables.getVariableByIdAsync(variableId);
-      if (!variable) {
-        return {
-          success: false,
-          message: "Variable not found",
-          error: `Could not find variable with ID: ${variableId}`
-        };
-      }
-      if (variable.resolvedType !== "COLOR") {
-        return {
-          success: false,
-          message: "Variable is not a color type",
-          error: `Variable ${variable.name} is of type ${variable.resolvedType}, expected COLOR`
-        };
-      }
-      const nodeWithPaints = node;
-      const paints = [...nodeWithPaints[propertyType]];
-      if (paintIndex >= paints.length) {
-        return {
-          success: false,
-          message: "Paint index out of range",
-          error: `Paint index ${paintIndex} does not exist. Node has ${paints.length} ${propertyType}.`
-        };
-      }
-      const currentPaint = paints[paintIndex];
-      if (currentPaint.type !== "SOLID") {
-        return {
-          success: false,
-          message: "Can only bind to solid paints",
-          error: `Paint at index ${paintIndex} is of type ${currentPaint.type}, expected SOLID`
-        };
-      }
-      const boundPaint = figma.variables.setBoundVariableForPaint(
-        currentPaint,
-        "color",
-        variable
-      );
-      paints[paintIndex] = boundPaint;
-      if (propertyType === "fills") {
-        node.fills = paints;
-      } else {
-        node.strokes = paints;
-      }
-      return {
-        success: true,
-        message: `Successfully bound ${variable.name} to ${propertyType}[${paintIndex}]`,
-        appliedFix: {
-          nodeId: node.id,
-          nodeName: node.name,
-          propertyPath: `${propertyType}[${paintIndex}]`,
-          beforeValue: currentPaint.type === "SOLID" && currentPaint.color ? rgbToHex(currentPaint.color.r, currentPaint.color.g, currentPaint.color.b) : "unknown",
-          afterValue: variable.name,
-          tokenId: variableId,
-          tokenName: variable.name,
-          fixType: "color"
-        }
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: "Failed to bind color token",
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  }
-  async function bindSpacingToken(node, property, variableId) {
-    try {
-      if (!(property in node)) {
-        return {
-          success: false,
-          message: `Node does not support ${property}`,
-          error: `Property ${property} not found on node type ${node.type}`
-        };
-      }
-      const variable = await figma.variables.getVariableByIdAsync(variableId);
-      if (!variable) {
-        return {
-          success: false,
-          message: "Variable not found",
-          error: `Could not find variable with ID: ${variableId}`
-        };
-      }
-      if (variable.resolvedType !== "FLOAT") {
-        return {
-          success: false,
-          message: "Variable is not a number type",
-          error: `Variable ${variable.name} is of type ${variable.resolvedType}, expected FLOAT`
-        };
-      }
-      const currentValue = node[property];
-      const bindableNode = node;
-      bindableNode.setBoundVariable(property, variable);
-      return {
-        success: true,
-        message: `Successfully bound ${variable.name} to ${property}`,
-        appliedFix: {
-          nodeId: node.id,
-          nodeName: node.name,
-          propertyPath: property,
-          beforeValue: typeof currentValue === "number" ? `${currentValue}px` : String(currentValue),
-          afterValue: variable.name,
-          tokenId: variableId,
-          tokenName: variable.name,
-          fixType: property.includes("Radius") ? "border" : "spacing"
-        }
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: "Failed to bind spacing token",
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  }
-  var libraryVariableCache = null;
-  var libraryCollectionCache = null;
-  async function getLibraryVariables(resolvedType) {
-    if (libraryVariableCache !== null && libraryCollectionCache !== null) {
-      const filtered2 = libraryVariableCache.filter((v) => v.resolvedType === resolvedType);
-      return { variables: filtered2, collectionNames: libraryCollectionCache };
-    }
-    const allImported = [];
-    const collectionNames = /* @__PURE__ */ new Map();
-    try {
-      const libraryCollections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
-      for (const libCollection of libraryCollections) {
-        try {
-          const libraryVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libCollection.key);
-          for (const libVar of libraryVars) {
-            try {
-              const imported = await figma.variables.importVariableByKeyAsync(libVar.key);
-              allImported.push(imported);
-              if (!collectionNames.has(imported.variableCollectionId)) {
-                collectionNames.set(
-                  imported.variableCollectionId,
-                  `${libCollection.libraryName} / ${libCollection.name}`
-                );
-              }
-            } catch (importErr) {
-              console.warn(`Failed to import library variable ${libVar.name}:`, importErr);
-            }
-          }
-        } catch (collErr) {
-          console.warn(`Failed to load variables from library collection ${libCollection.name}:`, collErr);
-        }
-      }
-    } catch (error) {
-      console.warn("Failed to load library variable collections:", error);
-    }
-    libraryVariableCache = allImported;
-    libraryCollectionCache = collectionNames;
-    const filtered = allImported.filter((v) => v.resolvedType === resolvedType);
-    return { variables: filtered, collectionNames };
-  }
-  async function findMatchingColorVariable(hexColor, tolerance = 0) {
-    try {
-      const targetRgb = hexToRgb(hexColor);
-      if (!targetRgb) {
-        return [];
-      }
-      const suggestions = [];
-      const seenVariableIds = /* @__PURE__ */ new Set();
-      const colorVariables = await figma.variables.getLocalVariablesAsync("COLOR");
-      const collections = await figma.variables.getLocalVariableCollectionsAsync();
-      const collectionMap = /* @__PURE__ */ new Map();
-      for (const collection of collections) {
-        collectionMap.set(collection.id, collection);
-      }
-      for (const variable of colorVariables) {
-        const collection = collectionMap.get(variable.variableCollectionId);
-        if (!collection) continue;
-        const modeId = collection.modes[0].modeId;
-        const value = variable.valuesByMode[modeId];
-        if (!value || typeof value !== "object" || !("r" in value)) {
-          continue;
-        }
-        const varColor = value;
-        const matchScore = calculateColorMatchScore(targetRgb, varColor);
-        if (matchScore >= 1 - tolerance) {
-          seenVariableIds.add(variable.id);
-          suggestions.push({
-            variableId: variable.id,
-            variableName: variable.name,
-            collectionName: collection.name,
-            value: rgbToHex(varColor.r, varColor.g, varColor.b),
-            matchScore,
-            type: "color"
-          });
-        }
-      }
-      try {
-        const { variables: libColorVars, collectionNames } = await getLibraryVariables("COLOR");
-        for (const variable of libColorVars) {
-          if (seenVariableIds.has(variable.id)) continue;
-          const varCollection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
-          if (!varCollection) continue;
-          const modeId = varCollection.modes[0].modeId;
-          const value = variable.valuesByMode[modeId];
-          if (!value || typeof value !== "object" || !("r" in value)) {
-            continue;
-          }
-          const varColor = value;
-          const matchScore = calculateColorMatchScore(targetRgb, varColor);
-          if (matchScore >= 1 - tolerance) {
-            seenVariableIds.add(variable.id);
-            suggestions.push({
-              variableId: variable.id,
-              variableName: variable.name,
-              collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
-              value: rgbToHex(varColor.r, varColor.g, varColor.b),
-              matchScore,
-              type: "color"
-            });
-          }
-        }
-      } catch (libError) {
-        console.warn("Library variable search failed for colors:", libError);
-      }
-      return suggestions.sort((a, b) => b.matchScore - a.matchScore);
-    } catch (error) {
-      console.error("Error finding matching color variable:", error);
-      return [];
-    }
-  }
-  async function findMatchingSpacingVariable(pixelValue, tolerance = 0) {
-    try {
-      const suggestions = [];
-      const seenVariableIds = /* @__PURE__ */ new Set();
-      const numberVariables = await figma.variables.getLocalVariablesAsync("FLOAT");
-      const collections = await figma.variables.getLocalVariableCollectionsAsync();
-      const collectionMap = /* @__PURE__ */ new Map();
-      for (const collection of collections) {
-        collectionMap.set(collection.id, collection);
-      }
-      for (const variable of numberVariables) {
-        const collection = collectionMap.get(variable.variableCollectionId);
-        if (!collection) continue;
-        const modeId = collection.modes[0].modeId;
-        const value = variable.valuesByMode[modeId];
-        if (typeof value !== "number") {
-          continue;
-        }
-        const difference = Math.abs(value - pixelValue);
-        if (difference <= tolerance) {
-          const matchScore = difference === 0 ? 1 : 1 - difference / (tolerance || 1);
-          seenVariableIds.add(variable.id);
-          suggestions.push({
-            variableId: variable.id,
-            variableName: variable.name,
-            collectionName: collection.name,
-            value: `${value}px`,
-            matchScore,
-            type: "number"
-          });
-        }
-      }
-      try {
-        const { variables: libNumberVars, collectionNames } = await getLibraryVariables("FLOAT");
-        for (const variable of libNumberVars) {
-          if (seenVariableIds.has(variable.id)) continue;
-          const varCollection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
-          if (!varCollection) continue;
-          const modeId = varCollection.modes[0].modeId;
-          const value = variable.valuesByMode[modeId];
-          if (typeof value !== "number") {
-            continue;
-          }
-          const difference = Math.abs(value - pixelValue);
-          if (difference <= tolerance) {
-            const matchScore = difference === 0 ? 1 : 1 - difference / (tolerance || 1);
-            seenVariableIds.add(variable.id);
-            suggestions.push({
-              variableId: variable.id,
-              variableName: variable.name,
-              collectionName: collectionNames.get(variable.variableCollectionId) || varCollection.name,
-              value: `${value}px`,
-              matchScore,
-              type: "number"
-            });
-          }
-        }
-      } catch (libError) {
-        console.warn("Library variable search failed for spacing:", libError);
-      }
-      return suggestions.sort((a, b) => b.matchScore - a.matchScore);
-    } catch (error) {
-      console.error("Error finding matching spacing variable:", error);
-      return [];
-    }
-  }
-  async function findBestMatchingVariable(pixelValue, propertyPath, tolerance = 2) {
-    const suggestions = await findMatchingSpacingVariable(pixelValue, tolerance);
-    if (suggestions.length === 0) return suggestions;
-    const affinityMap = {
-      strokeWeight: ["stroke", "border-width", "border/width", "borderwidth"],
-      cornerRadius: ["radius", "corner", "round", "border-radius"],
-      topLeftRadius: ["radius", "corner", "round"],
-      topRightRadius: ["radius", "corner", "round"],
-      bottomLeftRadius: ["radius", "corner", "round"],
-      bottomRightRadius: ["radius", "corner", "round"],
-      paddingTop: ["padding", "spacing", "space"],
-      paddingRight: ["padding", "spacing", "space"],
-      paddingBottom: ["padding", "spacing", "space"],
-      paddingLeft: ["padding", "spacing", "space"],
-      itemSpacing: ["gap", "spacing", "space"],
-      counterAxisSpacing: ["gap", "spacing", "space"]
-    };
-    const keywords = affinityMap[propertyPath] || [];
-    if (keywords.length === 0) return suggestions;
-    const boosted = suggestions.map((s) => {
-      const nameLower = s.variableName.toLowerCase();
-      const hasAffinity = keywords.some((kw) => nameLower.includes(kw));
-      return __spreadProps(__spreadValues({}, s), {
-        matchScore: hasAffinity ? Math.min(s.matchScore + 0.3, 1) : s.matchScore
-      });
-    });
-    return boosted.sort((a, b) => b.matchScore - a.matchScore);
-  }
-  async function applyColorFix(node, propertyPath, tokenId) {
-    const match = propertyPath.match(/^(fills|strokes)\[(\d+)\]$/);
-    if (!match) {
-      return {
-        success: false,
-        message: "Invalid property path",
-        error: `Expected format: fills[n] or strokes[n], got: ${propertyPath}`
-      };
-    }
-    const [, propertyType, indexStr] = match;
-    const paintIndex = parseInt(indexStr, 10);
-    return bindColorToken(
-      node,
-      propertyType,
-      tokenId,
-      paintIndex
-    );
-  }
-  async function applySpacingFix(node, propertyPath, tokenId) {
-    const validProperties = [
-      "paddingTop",
-      "paddingRight",
-      "paddingBottom",
-      "paddingLeft",
-      "itemSpacing",
-      "counterAxisSpacing",
-      "cornerRadius",
-      "topLeftRadius",
-      "topRightRadius",
-      "bottomLeftRadius",
-      "bottomRightRadius",
-      "strokeWeight"
-    ];
-    if (!validProperties.includes(propertyPath)) {
-      return {
-        success: false,
-        message: "Invalid property path",
-        error: `Property ${propertyPath} is not a valid spacing property`
-      };
-    }
-    if (propertyPath === "cornerRadius") {
-      const corners = [
-        "topLeftRadius",
-        "topRightRadius",
-        "bottomLeftRadius",
-        "bottomRightRadius"
-      ];
-      const results = [];
-      for (const corner of corners) {
-        const result = await bindSpacingToken(node, corner, tokenId);
-        results.push(result);
-        if (!result.success) {
-          return {
-            success: false,
-            message: `Failed to bind ${corner}`,
-            error: result.error
-          };
-        }
-      }
-      return {
-        success: true,
-        message: `Successfully bound variable to all 4 corner radii`,
-        appliedFix: results[0].appliedFix ? __spreadProps(__spreadValues({}, results[0].appliedFix), { propertyPath: "cornerRadius" }) : void 0
-      };
-    }
-    return bindSpacingToken(
-      node,
-      propertyPath,
-      tokenId
-    );
-  }
-  async function previewFix(node, propertyPath, tokenId) {
-    try {
-      const variable = await figma.variables.getVariableByIdAsync(tokenId);
-      if (!variable) {
-        return null;
-      }
-      let fixType;
-      let beforeValue;
-      const colorMatch = propertyPath.match(/^(fills|strokes)\[(\d+)\]$/);
-      if (colorMatch) {
-        fixType = "color";
-        const [, propertyType, indexStr] = colorMatch;
-        const paintIndex = parseInt(indexStr, 10);
-        if (!(propertyType in node)) {
-          return null;
-        }
-        const nodeWithPaints = node;
-        const paints = nodeWithPaints[propertyType];
-        if (paintIndex >= paints.length) {
-          return null;
-        }
-        const paint = paints[paintIndex];
-        if (paint.type === "SOLID" && paint.color) {
-          beforeValue = rgbToHex(paint.color.r, paint.color.g, paint.color.b);
-        } else {
-          beforeValue = paint.type;
-        }
-      } else {
-        if (!(propertyPath in node)) {
-          return null;
-        }
-        const currentValue = node[propertyPath];
-        beforeValue = typeof currentValue === "number" ? `${currentValue}px` : String(currentValue);
-        fixType = propertyPath.includes("Radius") ? "border" : "spacing";
-      }
-      let afterValue = variable.name;
-      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
-      if (collection) {
-        const modeId = collection.modes[0].modeId;
-        const value = variable.valuesByMode[modeId];
-        if (typeof value === "number") {
-          afterValue = `${variable.name} (${value}px)`;
-        } else if (value && typeof value === "object" && "r" in value) {
-          const rgb = value;
-          afterValue = `${variable.name} (${rgbToHex(rgb.r, rgb.g, rgb.b)})`;
-        }
-      }
-      return {
-        nodeId: node.id,
-        nodeName: node.name,
-        propertyPath,
-        beforeValue,
-        afterValue,
-        tokenId,
-        tokenName: variable.name,
-        fixType
-      };
-    } catch (error) {
-      console.error("Error generating fix preview:", error);
-      return null;
-    }
-  }
-  function hexToRgb(hex) {
-    const cleanHex = hex.replace(/^#/, "");
-    let fullHex = cleanHex;
-    if (cleanHex.length === 3) {
-      fullHex = cleanHex[0] + cleanHex[0] + cleanHex[1] + cleanHex[1] + cleanHex[2] + cleanHex[2];
-    }
-    if (fullHex.length !== 6) {
-      return null;
-    }
-    const r = parseInt(fullHex.substring(0, 2), 16);
-    const g = parseInt(fullHex.substring(2, 4), 16);
-    const b = parseInt(fullHex.substring(4, 6), 16);
-    if (isNaN(r) || isNaN(g) || isNaN(b)) {
-      return null;
-    }
-    return {
-      r: r / 255,
-      g: g / 255,
-      b: b / 255
-    };
-  }
-  function calculateColorMatchScore(color1, color2) {
-    const dr = color1.r - color2.r;
-    const dg = color1.g - color2.g;
-    const db = color1.b - color2.b;
-    const distance = Math.sqrt(dr * dr + dg * dg + db * db);
-    const maxDistance = Math.sqrt(3);
-    return 1 - distance / maxDistance;
-  }
-
   // src/ui/message-handler.ts
   var storedApiKey = null;
   var selectedModel = "claude-sonnet-4-5-20250929";
@@ -6468,7 +6516,7 @@ Respond naturally and helpfully to the user's question.`;
         } else {
           sendMessageToUI("fix-preview", {
             success: false,
-            error: "No matching token found for this value"
+            error: "No matching token found. Add a variable with this value to your design tokens to enable auto-fix."
           });
         }
       } else if (data.type === "naming") {
@@ -6600,7 +6648,8 @@ Respond naturally and helpfully to the user's question.`;
               nodeId: fix.nodeId,
               success: false,
               message: "Node not found",
-              error: "Node not found or is not a valid scene node"
+              error: "Node not found or is not a valid scene node",
+              fixType: fix.type
             });
             errorCount++;
             continue;
@@ -6612,7 +6661,8 @@ Respond naturally and helpfully to the user's question.`;
                 nodeId: fix.nodeId,
                 success: false,
                 message: "Missing property path",
-                error: "Token fixes require a propertyPath"
+                error: "Token fixes require a propertyPath",
+                fixType: "token"
               });
               errorCount++;
               continue;
@@ -6643,8 +6693,9 @@ Respond naturally and helpfully to the user's question.`;
               results.push({
                 nodeId: fix.nodeId,
                 success: false,
-                message: "No matching design token found for this value",
-                error: "Could not find a matching variable to bind"
+                message: "No matching token \u2014 add a variable for this value to your design tokens",
+                error: "No matching design token variable found. Add a variable with this value to enable auto-fix.",
+                fixType: "token"
               });
               errorCount++;
               continue;
@@ -6659,7 +6710,8 @@ Respond naturally and helpfully to the user's question.`;
               nodeId: fix.nodeId,
               success: result.success,
               message: result.message,
-              error: result.error
+              error: result.error,
+              fixType: "token"
             });
             if (result.success) {
               successCount++;
@@ -6674,7 +6726,8 @@ Respond naturally and helpfully to the user's question.`;
               nodeId: fix.nodeId,
               success,
               message: success ? `Renamed "${oldName}" to "${newName}"` : "Failed to rename layer",
-              newName: success ? newName : oldName
+              newName: success ? newName : oldName,
+              fixType: "naming"
             });
             if (success) {
               successCount++;
@@ -6686,7 +6739,8 @@ Respond naturally and helpfully to the user's question.`;
               nodeId: fix.nodeId,
               success: false,
               message: `Unknown fix type: ${fix.type}`,
-              error: `Unsupported fix type: ${fix.type}`
+              error: `Unsupported fix type: ${fix.type}`,
+              fixType: fix.type
             });
             errorCount++;
           }
@@ -6708,10 +6762,19 @@ Respond naturally and helpfully to the user's question.`;
         results
       };
       sendMessageToUI("batch-fix-applied", summary);
+      const noMatchErrors = results.filter((r) => {
+        var _a;
+        return !r.success && ((_a = r.message) == null ? void 0 : _a.includes("No matching token"));
+      });
+      const hasOnlyNoMatchErrors = errorCount > 0 && noMatchErrors.length === errorCount;
       if (errorCount === 0) {
         figma.notify(`Applied ${successCount} fix${successCount !== 1 ? "es" : ""} successfully`, { timeout: 2e3 });
+      } else if (successCount > 0 && hasOnlyNoMatchErrors) {
+        figma.notify(`Applied ${successCount} fix${successCount !== 1 ? "es" : ""}. ${errorCount} skipped (no matching tokens).`, { timeout: 3e3 });
       } else if (successCount > 0) {
         figma.notify(`Applied ${successCount} fix${successCount !== 1 ? "es" : ""}, ${errorCount} failed`, { timeout: 3e3 });
+      } else if (hasOnlyNoMatchErrors) {
+        figma.notify(`No matching tokens found for ${errorCount} value${errorCount !== 1 ? "s" : ""}. Add matching variables to your design tokens.`, { error: true, timeout: 4e3 });
       } else {
         figma.notify(`Failed to apply ${errorCount} fix${errorCount !== 1 ? "es" : ""}`, { error: true });
       }

@@ -6,6 +6,7 @@ import { extractDesignTokensFromNode } from './token-analyzer';
 import { extractJSONFromResponse, createEnhancedMetadataPrompt, filterDevelopmentRecommendations, createMCPEnhancedAnalysis } from '../api/claude';
 import { callProvider, ProviderId } from '../api/providers';
 import { analyzeNamingIssues } from '../fixes/naming-fixer';
+import { findMatchingColorVariable, findBestMatchingVariable } from '../fixes/token-fixer';
 
 /**
  * Extract comprehensive component context for analysis
@@ -1850,6 +1851,32 @@ export async function processAnalysisResult(
 
     if (options.includeTokenAnalysis !== false) {
       tokens = await extractDesignTokensFromNode(node);
+
+      // Check which hard-coded tokens have matching variables available
+      const categories: Array<'colors' | 'spacing' | 'typography' | 'effects' | 'borders'> = ['colors', 'spacing', 'typography', 'effects', 'borders'];
+      for (const category of categories) {
+        for (const token of tokens[category]) {
+          if (token.source !== 'hard-coded' || !token.context?.nodeId || !token.context?.property) continue;
+
+          try {
+            const isColorProperty = /^(fills|strokes)\[\d+\]$/.test(token.context.property);
+            if (isColorProperty) {
+              const matches = await findMatchingColorVariable(token.value || '', 0.1);
+              token.context.hasMatchingToken = matches.length > 0;
+            } else {
+              const pixelValue = parseFloat(token.value || '0');
+              if (!isNaN(pixelValue)) {
+                const matches = await findBestMatchingVariable(pixelValue, token.context.property, 2);
+                token.context.hasMatchingToken = matches.length > 0;
+              } else {
+                token.context.hasMatchingToken = false;
+              }
+            }
+          } catch {
+            token.context.hasMatchingToken = false;
+          }
+        }
+      }
     }
 
     // Ensure we have complete metadata even if some parts failed

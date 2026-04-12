@@ -575,11 +575,13 @@ export async function findMatchingColorVariable(
       const modeId = collection.modes[0].modeId;
       const value = variable.valuesByMode[modeId];
 
-      if (!value || typeof value !== 'object' || !('r' in value)) {
-        continue;
-      }
+      if (!value) continue;
 
-      const varColor = value as { r: number; g: number; b: number };
+      // Resolve aliases to get the actual color value
+      const resolved = await resolveVariableValue(value);
+      if (!resolved || typeof resolved === 'number') continue;
+
+      const varColor = resolved;
       const matchScore = calculateColorMatchScore(targetRgb, varColor);
 
       if (matchScore >= 1 - tolerance) {
@@ -610,11 +612,13 @@ export async function findMatchingColorVariable(
         const modeId = varCollection.modes[0].modeId;
         const value = variable.valuesByMode[modeId];
 
-        if (!value || typeof value !== 'object' || !('r' in value)) {
-          continue;
-        }
+        if (!value) continue;
 
-        const varColor = value as { r: number; g: number; b: number };
+        // Resolve aliases to get the actual color value
+        const resolved = await resolveVariableValue(value);
+        if (!resolved || typeof resolved === 'number') continue;
+
+        const varColor = resolved;
         const matchScore = calculateColorMatchScore(targetRgb, varColor);
 
         if (matchScore >= 1 - tolerance) {
@@ -672,12 +676,13 @@ export async function findMatchingSpacingVariable(
       if (!collection) continue;
 
       const modeId = collection.modes[0].modeId;
-      const value = variable.valuesByMode[modeId];
+      const rawValue = variable.valuesByMode[modeId];
 
-      if (typeof value !== 'number') {
-        continue;
-      }
+      // Resolve aliases to get the actual number value
+      const resolved = await resolveVariableValue(rawValue);
+      if (typeof resolved !== 'number') continue;
 
+      const value = resolved;
       const difference = Math.abs(value - pixelValue);
 
       if (difference <= tolerance) {
@@ -705,12 +710,13 @@ export async function findMatchingSpacingVariable(
         if (!varCollection) continue;
 
         const modeId = varCollection.modes[0].modeId;
-        const value = variable.valuesByMode[modeId];
+        const rawValue = variable.valuesByMode[modeId];
 
-        if (typeof value !== 'number') {
-          continue;
-        }
+        // Resolve aliases to get the actual number value
+        const resolved = await resolveVariableValue(rawValue);
+        if (typeof resolved !== 'number') continue;
 
+        const value = resolved;
         const difference = Math.abs(value - pixelValue);
 
         if (difference <= tolerance) {
@@ -1059,6 +1065,53 @@ export async function previewFix(
 // ============================================================================
 // Utility Functions
 // ============================================================================
+
+/**
+ * Resolve a variable value, following alias chains to get the final value.
+ * Returns the resolved value or null if resolution fails.
+ */
+async function resolveVariableValue(
+  value: VariableValue
+): Promise<{ r: number; g: number; b: number } | number | null> {
+  // Direct color value
+  if (typeof value === 'object' && value !== null && 'r' in value) {
+    return value as { r: number; g: number; b: number };
+  }
+
+  // Direct number value
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  // Alias - follow the reference
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    (value as { type: string }).type === 'VARIABLE_ALIAS'
+  ) {
+    const alias = value as { type: string; id: string };
+    try {
+      const referencedVar = await figma.variables.getVariableByIdAsync(alias.id);
+      if (!referencedVar) return null;
+
+      const collection = await figma.variables.getVariableCollectionByIdAsync(
+        referencedVar.variableCollectionId
+      );
+      if (!collection) return null;
+
+      const modeId = collection.modes[0].modeId;
+      const nestedValue = referencedVar.valuesByMode[modeId];
+
+      // Recurse to handle chained aliases
+      return resolveVariableValue(nestedValue);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Convert hex color to RGB object

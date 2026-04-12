@@ -1009,7 +1009,7 @@ async function handlePreviewFix(data: FixPreviewRequest): Promise<void> {
       } else {
         sendMessageToUI('fix-preview', {
           success: false,
-          error: 'No matching token found for this value'
+          error: 'No matching token found. Add a variable with this value to your design tokens to enable auto-fix.'
         });
       }
     } else if (data.type === 'naming') {
@@ -1174,6 +1174,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
       success: boolean;
       message: string;
       error?: string;
+      fixType?: string;
+      newName?: string;
     }> = [];
 
     let successCount = 0;
@@ -1188,7 +1190,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
             nodeId: fix.nodeId,
             success: false,
             message: 'Node not found',
-            error: 'Node not found or is not a valid scene node'
+            error: 'Node not found or is not a valid scene node',
+            fixType: fix.type
           });
           errorCount++;
           continue;
@@ -1203,7 +1206,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
               nodeId: fix.nodeId,
               success: false,
               message: 'Missing property path',
-              error: 'Token fixes require a propertyPath'
+              error: 'Token fixes require a propertyPath',
+              fixType: 'token'
             });
             errorCount++;
             continue;
@@ -1238,8 +1242,9 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
             results.push({
               nodeId: fix.nodeId,
               success: false,
-              message: 'No matching design token found for this value',
-              error: 'Could not find a matching variable to bind'
+              message: 'No matching token — add a variable for this value to your design tokens',
+              error: 'No matching design token variable found. Add a variable with this value to enable auto-fix.',
+              fixType: 'token'
             });
             errorCount++;
             continue;
@@ -1257,7 +1262,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
             nodeId: fix.nodeId,
             success: result.success,
             message: result.message,
-            error: result.error
+            error: result.error,
+            fixType: 'token'
           });
 
           if (result.success) {
@@ -1277,7 +1283,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
             message: success
               ? `Renamed "${oldName}" to "${newName}"`
               : 'Failed to rename layer',
-            newName: success ? newName : oldName
+            newName: success ? newName : oldName,
+            fixType: 'naming'
           });
 
           if (success) {
@@ -1290,7 +1297,8 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
             nodeId: fix.nodeId,
             success: false,
             message: `Unknown fix type: ${fix.type}`,
-            error: `Unsupported fix type: ${fix.type}`
+            error: `Unsupported fix type: ${fix.type}`,
+            fixType: fix.type
           });
           errorCount++;
         }
@@ -1315,10 +1323,18 @@ async function handleApplyBatchFix(data: BatchFixRequest): Promise<void> {
 
     sendMessageToUI('batch-fix-applied', summary);
 
+    // Check if all errors are due to no matching tokens
+    const noMatchErrors = results.filter(r => !r.success && r.message?.includes('No matching token'));
+    const hasOnlyNoMatchErrors = errorCount > 0 && noMatchErrors.length === errorCount;
+
     if (errorCount === 0) {
       figma.notify(`Applied ${successCount} fix${successCount !== 1 ? 'es' : ''} successfully`, { timeout: 2000 });
+    } else if (successCount > 0 && hasOnlyNoMatchErrors) {
+      figma.notify(`Applied ${successCount} fix${successCount !== 1 ? 'es' : ''}. ${errorCount} skipped (no matching tokens).`, { timeout: 3000 });
     } else if (successCount > 0) {
       figma.notify(`Applied ${successCount} fix${successCount !== 1 ? 'es' : ''}, ${errorCount} failed`, { timeout: 3000 });
+    } else if (hasOnlyNoMatchErrors) {
+      figma.notify(`No matching tokens found for ${errorCount} value${errorCount !== 1 ? 's' : ''}. Add matching variables to your design tokens.`, { error: true, timeout: 4000 });
     } else {
       figma.notify(`Failed to apply ${errorCount} fix${errorCount !== 1 ? 'es' : ''}`, { error: true });
     }
