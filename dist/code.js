@@ -2232,31 +2232,13 @@ x-amz-date:${amzDate}
   }
   var BEDROCK_MODELS = [
     {
-      id: "anthropic.claude-sonnet-4-5-20250929-v1:0",
-      name: "Claude Sonnet 4.5",
+      id: "anthropic.claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
       description: "Standard model - Balanced performance and cost, recommended for most tasks",
       tier: "standard",
       contextWindow: 2e5,
       maxOutputTokens: 8192,
       isDefault: true
-    },
-    {
-      id: "anthropic.claude-3-5-haiku-20241022-v1:0",
-      name: "Claude 3.5 Haiku",
-      description: "Economy model - Fast and cost-effective for routine tasks",
-      tier: "economy",
-      contextWindow: 2e5,
-      maxOutputTokens: 8192,
-      isDefault: false
-    },
-    {
-      id: "anthropic.claude-3-opus-20240229-v1:0",
-      name: "Claude 3 Opus",
-      description: "Flagship model - Most capable, best for complex analysis and reasoning",
-      tier: "flagship",
-      contextWindow: 2e5,
-      maxOutputTokens: 4096,
-      isDefault: false
     }
   ];
   var BedrockProvider = class {
